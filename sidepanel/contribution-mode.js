@@ -18,7 +18,7 @@
     const hiddenRows = [
       dom.rowVpsUrl,
       dom.rowVpsPassword,
-      dom.rowLocalCpaStep9Mode,
+      dom.rowLocalCpaSkippedSteps,
       dom.rowSub2ApiUrl,
       dom.rowSub2ApiEmail,
       dom.rowSub2ApiPassword,

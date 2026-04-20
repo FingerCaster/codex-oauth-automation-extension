@@ -78,8 +78,8 @@ const rowVpsUrl = document.getElementById('row-vps-url');
 const inputVpsUrl = document.getElementById('input-vps-url');
 const rowVpsPassword = document.getElementById('row-vps-password');
 const inputVpsPassword = document.getElementById('input-vps-password');
-const rowLocalCpaStep9Mode = document.getElementById('row-local-cpa-step9-mode');
-const localCpaStep9ModeButtons = Array.from(document.querySelectorAll('[data-local-cpa-step9-mode]'));
+const rowLocalCpaSkippedSteps = document.getElementById('row-local-cpa-skipped-steps');
+const localCpaSkippedStepsList = document.getElementById('local-cpa-skipped-steps-list');
 const rowSub2ApiUrl = document.getElementById('row-sub2api-url');
 const inputSub2ApiUrl = document.getElementById('input-sub2api-url');
 const rowSub2ApiEmail = document.getElementById('row-sub2api-email');
@@ -204,6 +204,7 @@ const btnAutoStartContinue = document.getElementById('btn-auto-start-continue');
 const autoHintText = document.querySelector('.auto-hint');
 const stepDefinitions = (window.MultiPageStepDefinitions?.getSteps?.() || []).sort((left, right) => left.order - right.order);
 const STEP_IDS = stepDefinitions.map((step) => Number(step.id)).filter(Number.isFinite);
+const LAST_STEP_ID = STEP_IDS[STEP_IDS.length - 1] || 10;
 const STEP_DEFAULT_STATUSES = Object.fromEntries(STEP_IDS.map((stepId) => [stepId, 'pending']));
 const SKIPPABLE_STEPS = new Set(STEP_IDS);
 const stepsList = document.querySelector('.steps-list');
@@ -220,6 +221,7 @@ const VERIFICATION_RESEND_COUNT_MIN = 0;
 const VERIFICATION_RESEND_COUNT_MAX = 20;
 const DEFAULT_VERIFICATION_RESEND_COUNT = 4;
 const DEFAULT_LOCAL_CPA_STEP9_MODE = 'submit';
+const DEFAULT_LOCAL_CPA_SKIPPED_STEPS = [];
 const DEFAULT_CPA_CALLBACK_MODE = 'step8';
 const MAIL_2925_MODE_PROVIDE = 'provide';
 const MAIL_2925_MODE_RECEIVE = 'receive';
@@ -1346,7 +1348,7 @@ function collectSettingsPayload() {
     panelMode: selectPanelMode.value,
     vpsUrl: inputVpsUrl.value.trim(),
     vpsPassword: inputVpsPassword.value,
-    localCpaStep9Mode: getSelectedLocalCpaStep9Mode(),
+    localCpaSkippedSteps: getSelectedLocalCpaSkippedSteps(),
     sub2apiUrl: inputSub2ApiUrl.value.trim(),
     sub2apiEmail: inputSub2ApiEmail.value.trim(),
     sub2apiPassword: inputSub2ApiPassword.value,
@@ -1400,6 +1402,38 @@ function normalizeLocalCpaStep9Mode(value = '') {
     : DEFAULT_LOCAL_CPA_STEP9_MODE;
 }
 
+function normalizeLocalCpaSkippedStepsValue(value, options = {}) {
+  const { allowUnset = false } = options;
+  if (value === undefined || value === null || value === '') {
+    return allowUnset ? null : DEFAULT_LOCAL_CPA_SKIPPED_STEPS.slice();
+  }
+
+  const normalizedSteps = [];
+  const seen = new Set();
+  const values = Array.isArray(value) ? value : [value];
+  for (const entry of values) {
+    const step = Number(entry);
+    if (!Number.isFinite(step) || !STEP_IDS.includes(step) || seen.has(step)) {
+      continue;
+    }
+    seen.add(step);
+    normalizedSteps.push(step);
+  }
+
+  normalizedSteps.sort((left, right) => left - right);
+  return normalizedSteps;
+}
+
+function resolveLocalCpaSkippedStepsState(state = {}) {
+  const explicitSteps = normalizeLocalCpaSkippedStepsValue(state?.localCpaSkippedSteps, { allowUnset: true });
+  if (Array.isArray(explicitSteps)) {
+    return explicitSteps;
+  }
+  return normalizeLocalCpaStep9Mode(state?.localCpaStep9Mode) === 'bypass'
+    ? [LAST_STEP_ID]
+    : DEFAULT_LOCAL_CPA_SKIPPED_STEPS.slice();
+}
+
 function normalizeMail2925Mode(value = '') {
   return String(value || '').trim().toLowerCase() === MAIL_2925_MODE_RECEIVE
     ? MAIL_2925_MODE_RECEIVE
@@ -1439,17 +1473,66 @@ function normalizeAccountRunHistoryHelperBaseUrlValue(value = '') {
   }
 }
 
-function getSelectedLocalCpaStep9Mode() {
-  const activeButton = localCpaStep9ModeButtons.find((button) => button.classList.contains('is-active'));
-  return normalizeLocalCpaStep9Mode(activeButton?.dataset.localCpaStep9Mode);
+function getLocalCpaSkippedStepInputs() {
+  return Array.from(localCpaSkippedStepsList?.querySelectorAll('[data-local-cpa-skipped-step]') || []);
 }
 
-function setLocalCpaStep9Mode(mode) {
-  const resolvedMode = normalizeLocalCpaStep9Mode(mode);
-  localCpaStep9ModeButtons.forEach((button) => {
-    const active = button.dataset.localCpaStep9Mode === resolvedMode;
-    button.classList.toggle('is-active', active);
-    button.setAttribute('aria-pressed', String(active));
+function renderLocalCpaSkippedStepsOptions() {
+  if (!localCpaSkippedStepsList) {
+    return;
+  }
+
+  localCpaSkippedStepsList.textContent = '';
+  const fragment = document.createDocumentFragment();
+  stepDefinitions.forEach((definition) => {
+    const label = document.createElement('label');
+    label.className = 'multi-choice-item';
+
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.className = 'multi-choice-checkbox';
+    checkbox.dataset.localCpaSkippedStep = String(definition.id);
+    checkbox.setAttribute('aria-label', `跳过步骤 ${definition.id}`);
+    checkbox.addEventListener('change', () => {
+      markSettingsDirty(true);
+      saveSettings({ silent: true }).catch(() => { });
+    });
+
+    const copy = document.createElement('span');
+    copy.className = 'multi-choice-copy';
+
+    const title = document.createElement('span');
+    title.className = 'multi-choice-title';
+    title.textContent = `步骤 ${definition.id}`;
+
+    const desc = document.createElement('span');
+    desc.className = 'multi-choice-desc';
+    desc.textContent = definition.title || `步骤 ${definition.id}`;
+
+    copy.appendChild(title);
+    copy.appendChild(desc);
+    label.appendChild(checkbox);
+    label.appendChild(copy);
+    fragment.appendChild(label);
+  });
+
+  localCpaSkippedStepsList.appendChild(fragment);
+}
+
+function getSelectedLocalCpaSkippedSteps() {
+  return normalizeLocalCpaSkippedStepsValue(
+    getLocalCpaSkippedStepInputs()
+      .filter((input) => input.checked)
+      .map((input) => Number(input.dataset.localCpaSkippedStep))
+  );
+}
+
+function setLocalCpaSkippedSteps(steps) {
+  const resolvedSteps = normalizeLocalCpaSkippedStepsValue(steps);
+  const selected = new Set(resolvedSteps);
+  getLocalCpaSkippedStepInputs().forEach((input) => {
+    const step = Number(input.dataset.localCpaSkippedStep);
+    input.checked = selected.has(step);
   });
 }
 
@@ -1723,7 +1806,7 @@ function applySettingsState(state) {
   syncPasswordField(state || {});
   inputVpsUrl.value = state?.vpsUrl || '';
   inputVpsPassword.value = state?.vpsPassword || '';
-  setLocalCpaStep9Mode(state?.localCpaStep9Mode);
+  setLocalCpaSkippedSteps(resolveLocalCpaSkippedStepsState(state));
   selectPanelMode.value = state?.panelMode || 'cpa';
   inputSub2ApiUrl.value = state?.sub2apiUrl || '';
   inputSub2ApiEmail.value = state?.sub2apiEmail || '';
@@ -2562,7 +2645,7 @@ function updatePanelModeUI() {
   const useSub2Api = selectPanelMode.value === 'sub2api';
   rowVpsUrl.style.display = useSub2Api ? 'none' : '';
   rowVpsPassword.style.display = useSub2Api ? 'none' : '';
-  rowLocalCpaStep9Mode.style.display = useSub2Api ? 'none' : '';
+  rowLocalCpaSkippedSteps.style.display = useSub2Api ? 'none' : '';
   rowSub2ApiUrl.style.display = useSub2Api ? '' : 'none';
   rowSub2ApiEmail.style.display = useSub2Api ? '' : 'none';
   rowSub2ApiPassword.style.display = useSub2Api ? '' : 'none';
@@ -3063,7 +3146,7 @@ const contributionModeManager = window.SidepanelContributionMode?.createContribu
     rowAccountRunHistoryHelperBaseUrl,
     rowAccountRunHistoryTextEnabled,
     rowCustomPassword,
-    rowLocalCpaStep9Mode,
+    rowLocalCpaSkippedSteps,
     rowSub2ApiDefaultProxy,
     rowSub2ApiEmail,
     rowSub2ApiGroup,
@@ -3365,18 +3448,6 @@ btnMailLogin?.addEventListener('click', async () => {
   } catch (err) {
     showToast(`打开${config.label}失败：${err.message}`, 'error');
   }
-});
-
-localCpaStep9ModeButtons.forEach((button) => {
-  button.addEventListener('click', () => {
-    const nextMode = button.dataset.localCpaStep9Mode;
-    if (getSelectedLocalCpaStep9Mode() === normalizeLocalCpaStep9Mode(nextMode)) {
-      return;
-    }
-    setLocalCpaStep9Mode(nextMode);
-    markSettingsDirty(true);
-    saveSettings({ silent: true }).catch(() => { });
-  });
 });
 
 hotmailServiceModeButtons.forEach((button) => {
@@ -4225,8 +4296,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       ) {
         syncPasswordField(latestState || {});
       }
-      if (message.payload.localCpaStep9Mode !== undefined) {
-        setLocalCpaStep9Mode(message.payload.localCpaStep9Mode);
+      if (message.payload.localCpaSkippedSteps !== undefined || message.payload.localCpaStep9Mode !== undefined) {
+        setLocalCpaSkippedSteps(resolveLocalCpaSkippedStepsState(latestState || {}));
       }
       if (message.payload.panelMode !== undefined) {
         selectPanelMode.value = message.payload.panelMode || 'cpa';
@@ -4423,7 +4494,8 @@ initTheme();
 initHotmailListExpandedState();
 updateSaveButtonState();
 updateConfigMenuControls();
-setLocalCpaStep9Mode(DEFAULT_LOCAL_CPA_STEP9_MODE);
+renderLocalCpaSkippedStepsOptions();
+setLocalCpaSkippedSteps(DEFAULT_LOCAL_CPA_SKIPPED_STEPS);
 setMail2925Mode(DEFAULT_MAIL_2925_MODE);
 initializeReleaseInfo().catch((err) => {
   console.error('Failed to initialize release info:', err);

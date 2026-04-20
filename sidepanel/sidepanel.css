@@ -849,6 +849,80 @@ header {
   color: var(--text-muted);
 }
 
+.multi-choice-group {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.multi-choice-hint {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.multi-choice-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.multi-choice-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-base);
+  cursor: pointer;
+  transition: border-color var(--transition), background var(--transition), box-shadow var(--transition);
+}
+
+.multi-choice-item:hover {
+  border-color: var(--blue);
+  background: var(--blue-soft);
+}
+
+.multi-choice-checkbox {
+  margin-top: 2px;
+  accent-color: var(--blue);
+  cursor: pointer;
+}
+
+.multi-choice-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.multi-choice-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.multi-choice-desc {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+
+.multi-choice-item:has(.multi-choice-checkbox:checked) {
+  border-color: var(--blue);
+  background: var(--blue-soft);
+  box-shadow: 0 0 0 1px var(--blue-glow);
+}
+
+@media (max-width: 480px) {
+  .multi-choice-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 #btn-fetch-email,
 #btn-save-settings {
   padding-inline: 10px;

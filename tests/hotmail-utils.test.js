@@ -127,6 +127,29 @@ test('pickHotmailAccountForRun falls back to never-used authorized account first
   assert.equal(selected.id, 'fresh');
 });
 
+test('pickHotmailAccountForRun falls back to pending account when refresh token is already available', () => {
+  const accounts = [
+    {
+      id: 'pending-a',
+      email: 'pending-a@hotmail.com',
+      status: 'pending',
+      refreshToken: 'rt-pending-a',
+      lastUsedAt: Date.UTC(2026, 3, 10, 9, 30, 0),
+    },
+    {
+      id: 'pending-b',
+      email: 'pending-b@hotmail.com',
+      status: 'pending',
+      refreshToken: 'rt-pending-b',
+      lastUsedAt: 0,
+    },
+  ];
+
+  const selected = pickHotmailAccountForRun(accounts, {});
+
+  assert.equal(selected.id, 'pending-b');
+});
+
 test('upsertHotmailAccountInList replaces matching account state by id', () => {
   const accounts = [
     {
@@ -299,6 +322,38 @@ test('pickVerificationMessage filters by time, sender, subject, and excluded cod
   assert.equal(match.code, '333333');
 });
 
+test('pickVerificationMessage filters by target email before choosing the newest code', () => {
+  const messages = [
+    {
+      id: 'wrong-recipient-newer',
+      subject: 'ChatGPT verification code 777111',
+      from: { emailAddress: { address: 'noreply@openai.com' } },
+      toRecipients: [{ emailAddress: { address: 'other@hotmail.com', name: '' } }],
+      bodyPreview: 'Use 777111 to continue',
+      receivedDateTime: '2026-04-10T10:05:00.000Z',
+    },
+    {
+      id: 'target-recipient-hit',
+      subject: 'ChatGPT verification code 888222',
+      from: { emailAddress: { address: 'noreply@openai.com' } },
+      toRecipients: [{ emailAddress: { address: 'target@hotmail.com', name: '' } }],
+      bodyPreview: 'Use 888222 to continue',
+      receivedDateTime: '2026-04-10T10:04:00.000Z',
+    },
+  ];
+
+  const match = pickVerificationMessage(messages, {
+    afterTimestamp: Date.UTC(2026, 3, 10, 10, 0, 0),
+    senderFilters: ['openai', 'noreply'],
+    subjectFilters: ['verification', 'code', 'chatgpt'],
+    targetEmail: 'target@hotmail.com',
+    excludeCodes: [],
+  });
+
+  assert.equal(match.message.id, 'target-recipient-hit');
+  assert.equal(match.code, '888222');
+});
+
 test('pickVerificationMessageWithFallback no longer matches arbitrary recent mails when filters miss', () => {
   const messages = [
     {
@@ -403,6 +458,7 @@ test('normalizeHotmailMailApiMessages maps third-party payload fields into verif
       id: 'mail-1',
       subject: 'ChatGPT verification code',
       from: { emailAddress: { address: 'noreply@openai.com' } },
+      toRecipients: [],
       bodyPreview: 'Use 135790 to continue',
       receivedDateTime: '2026-04-10T10:02:00.000Z',
     },
@@ -410,6 +466,7 @@ test('normalizeHotmailMailApiMessages maps third-party payload fields into verif
       id: 'mail-2',
       subject: 'Ignored',
       from: { emailAddress: { address: 'alerts@example.com' } },
+      toRecipients: [],
       bodyPreview: 'No code here',
       receivedDateTime: '2026-04-10T10:03:00.000Z',
     },

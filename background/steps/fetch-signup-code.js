@@ -91,8 +91,12 @@
         }
       }
 
+      const filterAfterTimestamp = mail.provider === HOTMAIL_PROVIDER
+        ? undefined
+        : (mail.provider === '2925' ? 0 : stepStartedAt);
+
       await resolveVerificationStep(4, state, mail, {
-        filterAfterTimestamp: mail.provider === '2925' ? 0 : stepStartedAt,
+        filterAfterTimestamp,
         sessionKey: verificationSessionKey,
         disableTimeBudgetCap: mail.provider === '2925',
         requestFreshCodeFirst: mail.provider === HOTMAIL_PROVIDER ? false : true,

@@ -72,6 +72,15 @@ const PERSISTED_SETTING_DEFAULTS = {
 };
 function normalizePanelMode(value) { return value === 'sub2api' ? 'sub2api' : 'cpa'; }
 function normalizeLocalCpaStep9Mode(value) { return value === 'bypass' ? 'bypass' : 'submit'; }
+function normalizeLocalCpaSkippedSteps(value, options = {}) {
+  if (value === undefined || value === null || value === '') {
+    return options.allowUnset ? null : [];
+  }
+  return (Array.isArray(value) ? value : [value])
+    .map((entry) => Number(entry))
+    .filter((entry, index, array) => Number.isFinite(entry) && array.indexOf(entry) === index)
+    .sort((left, right) => left - right);
+}
 function normalizeAutoRunFallbackThreadIntervalMinutes(value) { return Number(value) || 0; }
 function normalizeAutoRunDelayMinutes(value) { return Number(value) || 30; }
 function normalizeAutoStepDelaySeconds(value) { return value == null || value === '' ? null : Number(value); }
@@ -117,5 +126,9 @@ return {
   assert.equal(
     api.normalizePersistentSettingValue('sub2apiDefaultProxyName', ' proxy-a '),
     'proxy-a'
+  );
+  assert.deepStrictEqual(
+    api.normalizePersistentSettingValue('localCpaSkippedSteps', ['10', 3, 'x', 3]),
+    [3, 10]
   );
 });

@@ -17,7 +17,6 @@
       reuseOrCreateTab,
       sendToContentScript,
       sendToContentScriptResilient,
-      shouldBypassStep9ForLocalCpa,
       SUB2API_STEP9_RESPONSE_TIMEOUT_MS,
     } = deps;
 
@@ -37,15 +36,6 @@
       }
       if (!state.vpsUrl) {
         throw new Error('尚未填写 CPA 地址，请先在侧边栏输入。');
-      }
-
-      if (shouldBypassStep9ForLocalCpa(state)) {
-        await addLog('步骤 10：检测到本地 CPA，且当前策略为“跳过第10步”，本轮不再重复提交回调地址。', 'info');
-        await completeStepFromBackground(10, {
-          localhostUrl: state.localhostUrl,
-          verifiedStatus: 'local-auto',
-        });
-        return;
       }
 
       await addLog('步骤 10：正在打开 CPA 面板...');

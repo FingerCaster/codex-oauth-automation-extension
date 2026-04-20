@@ -94,6 +94,13 @@
       && Boolean(account.refreshToken);
   }
 
+  function isPendingHotmailAccount(account) {
+    return Boolean(account)
+      && account.status === 'pending'
+      && !account.used
+      && Boolean(account.refreshToken);
+  }
+
   function shouldClearHotmailCurrentSelection(account) {
     return Boolean(account) && account.used === true;
   }
@@ -113,7 +120,10 @@
   }
 
   function pickHotmailAccountForRun(accounts, options = {}) {
-    const candidates = Array.isArray(accounts) ? accounts.filter(isAuthorizedHotmailAccount) : [];
+    const list = Array.isArray(accounts) ? accounts : [];
+    const candidates = list.filter((account) => (
+      isAuthorizedHotmailAccount(account) || isPendingHotmailAccount(account)
+    ));
     if (!candidates.length) return null;
 
     const excludeIds = new Set((options.excludeIds || []).filter(Boolean));
@@ -123,6 +133,12 @@
     return pool
       .slice()
       .sort((left, right) => {
+        const leftPriority = left?.status === 'authorized' ? 0 : 1;
+        const rightPriority = right?.status === 'authorized' ? 0 : 1;
+        if (leftPriority !== rightPriority) {
+          return leftPriority - rightPriority;
+        }
+
         const leftUsedAt = normalizeTimestamp(left.lastUsedAt);
         const rightUsedAt = normalizeTimestamp(right.lastUsedAt);
         if (leftUsedAt !== rightUsedAt) {
@@ -136,6 +152,7 @@
   function messageMatchesFilters(message, filters = {}) {
     const senderFilters = (filters.senderFilters || []).map(normalizeText).filter(Boolean);
     const subjectFilters = (filters.subjectFilters || []).map(normalizeText).filter(Boolean);
+    const targetEmail = normalizeText(filters.targetEmail);
     const afterTimestamp = normalizeTimestamp(filters.afterTimestamp);
     const receivedAt = normalizeTimestamp(message?.receivedDateTime);
     if (afterTimestamp && receivedAt && receivedAt < afterTimestamp) {
@@ -145,19 +162,30 @@
     const sender = normalizeText(message?.from?.emailAddress?.address);
     const subject = normalizeText(message?.subject);
     const preview = String(message?.bodyPreview || '');
-    const combinedText = [subject, sender, preview].filter(Boolean).join(' ');
+    const normalizedPreview = normalizeText(preview);
+    const recipientAddresses = getMessageRecipientAddresses(message);
+    const combinedText = [subject, sender, normalizedPreview, recipientAddresses.join(' ')].filter(Boolean).join(' ');
     const code = extractVerificationCode(combinedText);
     const excludedCodes = new Set((filters.excludeCodes || []).filter(Boolean));
     if (code && excludedCodes.has(code)) {
       return null;
     }
 
+    if (targetEmail) {
+      const targetMatched = recipientAddresses.length > 0
+        ? recipientAddresses.includes(targetEmail)
+        : combinedText.includes(targetEmail);
+      if (!targetMatched) {
+        return null;
+      }
+    }
+
     const senderMatch = senderFilters.length === 0
       ? true
-      : senderFilters.some((item) => sender.includes(item) || normalizeText(preview).includes(item));
+      : senderFilters.some((item) => sender.includes(item) || normalizedPreview.includes(item));
     const subjectMatch = subjectFilters.length === 0
       ? true
-      : subjectFilters.some((item) => subject.includes(item) || normalizeText(preview).includes(item));
+      : subjectFilters.some((item) => subject.includes(item) || normalizedPreview.includes(item));
 
     if (!senderMatch && !subjectMatch) {
       return null;
@@ -239,6 +267,41 @@
     return '';
   }
 
+  function normalizeRecipientList(recipients) {
+    const list = Array.isArray(recipients)
+      ? recipients
+      : (recipients ? [recipients] : []);
+
+    return list
+      .map((recipient) => {
+        const address = normalizeMailAddress(recipient);
+        if (!address) {
+          return null;
+        }
+
+        return {
+          emailAddress: {
+            address,
+            name: firstNonEmptyString([
+              recipient?.emailAddress?.name,
+              recipient?.name,
+            ]),
+          },
+        };
+      })
+      .filter(Boolean);
+  }
+
+  function getMessageRecipientAddresses(message = {}) {
+    return normalizeRecipientList(
+      message?.toRecipients
+      || message?.to
+      || message?.recipients
+    )
+      .map((recipient) => normalizeText(recipient?.emailAddress?.address))
+      .filter(Boolean);
+  }
+
   function stripHtmlTags(text) {
     return String(text || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
   }
@@ -274,6 +337,12 @@
         message.created_at,
         message.time,
       ]),
+      toRecipients: normalizeRecipientList(
+        message.toRecipients
+        || message.to_recipients
+        || message.to
+        || message.recipients
+      ),
     };
   }
 

@@ -166,7 +166,7 @@ function getCloudflareDomainsFromState() { return { domains: ['example.com'], ac
 function normalizeCloudflareDomainValue(value) { return String(value || '').trim(); }
 function getCloudflareTempEmailDomainsFromState() { return { domains: ['mail.example.com'], activeDomain: 'mail.example.com' }; }
 function normalizeCloudflareTempEmailDomainValue(value) { return String(value || '').trim(); }
-function getSelectedLocalCpaStep9Mode() { return 'submit'; }
+function getSelectedLocalCpaSkippedSteps() { return [3, 10]; }
 function getSelectedMail2925Mode() { return 'provide'; }
 function normalizeAccountRunHistoryHelperBaseUrlValue(value) { return String(value || '').trim(); }
 function buildManagedAliasBaseEmailPayload() { return { gmailBaseEmail: '', mail2925BaseEmail: '', emailPrefix: '' }; }
@@ -190,6 +190,7 @@ return {
   assert.equal('customPassword' in contributionPayload, false);
   assert.equal('accountRunHistoryTextEnabled' in contributionPayload, false);
   assert.equal('accountRunHistoryHelperBaseUrl' in contributionPayload, false);
+  assert.deepStrictEqual(contributionPayload.localCpaSkippedSteps, [3, 10]);
 
   api.setLatestState({ contributionMode: false });
   const normalPayload = api.collectSettingsPayload();
@@ -258,7 +259,7 @@ test('contribution mode manager enters mode, starts main auto flow, polls contri
     rowAccountRunHistoryHelperBaseUrl: createElement(),
     rowAccountRunHistoryTextEnabled: createElement(),
     rowCustomPassword: createElement(),
-    rowLocalCpaStep9Mode: createElement(),
+    rowLocalCpaSkippedSteps: createElement(),
     rowSub2ApiDefaultProxy: createElement(),
     rowSub2ApiEmail: createElement(),
     rowSub2ApiGroup: createElement(),

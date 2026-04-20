@@ -114,7 +114,7 @@
     const fetchImpl = getFetchImpl(options.fetchImpl);
     const mailbox = normalizeMailboxLabel(options.mailbox);
     const top = Math.max(1, Math.min(Number(options.top) || 5, 30));
-    const url = `${GRAPH_API_BASE}/${normalizeMailboxId(mailbox)}/messages?$top=${encodeURIComponent(top)}&$select=id,internetMessageId,subject,from,bodyPreview,receivedDateTime&$orderby=receivedDateTime desc`;
+    const url = `${GRAPH_API_BASE}/${normalizeMailboxId(mailbox)}/messages?$top=${encodeURIComponent(top)}&$select=id,internetMessageId,subject,from,toRecipients,bodyPreview,receivedDateTime&$orderby=receivedDateTime desc`;
     const response = await fetchImpl(url, {
       method: 'GET',
       headers: {
@@ -136,7 +136,7 @@
     const fetchImpl = getFetchImpl(options.fetchImpl);
     const mailbox = normalizeMailboxLabel(options.mailbox);
     const top = Math.max(1, Math.min(Number(options.top) || 5, 30));
-    const url = `${OUTLOOK_API_BASE}/${normalizeMailboxId(mailbox)}/messages?$top=${encodeURIComponent(top)}&$select=Id,Subject,From,BodyPreview,Body,ReceivedDateTime&$orderby=ReceivedDateTime desc`;
+    const url = `${OUTLOOK_API_BASE}/${normalizeMailboxId(mailbox)}/messages?$top=${encodeURIComponent(top)}&$select=Id,Subject,From,ToRecipients,BodyPreview,Body,ReceivedDateTime&$orderby=ReceivedDateTime desc`;
     const response = await fetchImpl(url, {
       method: 'GET',
       headers: {
@@ -157,6 +157,9 @@
   function normalizeMessage(message, mailbox = 'INBOX') {
     const sender = message?.From || message?.from || {};
     const emailAddress = sender?.EmailAddress || sender?.emailAddress || {};
+    const toRecipients = Array.isArray(message?.ToRecipients || message?.toRecipients)
+      ? (message.ToRecipients || message.toRecipients)
+      : [];
     return {
       mailbox: normalizeMailboxLabel(mailbox || message?.mailbox),
       from: {
@@ -165,6 +168,15 @@
           name: String(emailAddress?.Name || emailAddress?.name || '').trim(),
         },
       },
+      toRecipients: toRecipients
+        .map((recipient) => recipient?.EmailAddress || recipient?.emailAddress || {})
+        .map((recipient) => ({
+          emailAddress: {
+            address: String(recipient?.Address || recipient?.address || '').trim(),
+            name: String(recipient?.Name || recipient?.name || '').trim(),
+          },
+        }))
+        .filter((recipient) => recipient.emailAddress.address),
       subject: String(message?.Subject || message?.subject || '').trim(),
       receivedDateTime: String(message?.ReceivedDateTime || message?.receivedDateTime || '').trim(),
       bodyPreview: String(message?.BodyPreview || message?.bodyPreview || '').trim(),

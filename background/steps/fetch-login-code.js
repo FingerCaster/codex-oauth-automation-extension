@@ -127,11 +127,15 @@
         }
       }
 
+      const filterAfterTimestamp = mail.provider === HOTMAIL_PROVIDER
+        ? undefined
+        : (mail.provider === '2925' ? 0 : stepStartedAt);
+
       await resolveVerificationStep(8, {
         ...state,
         step8VerificationTargetEmail: displayedVerificationEmail || '',
       }, mail, {
-        filterAfterTimestamp: mail.provider === '2925' ? 0 : stepStartedAt,
+        filterAfterTimestamp,
         sessionKey: verificationSessionKey,
         disableTimeBudgetCap: mail.provider === '2925',
         getRemainingTimeMs: getStep8RemainingTimeResolver(state?.oauthUrl || ''),

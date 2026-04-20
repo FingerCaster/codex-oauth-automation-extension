@@ -53,6 +53,7 @@ test('extractVerificationCodeFromMessages 支持显式过滤条件并跳过排�
           name: '',
         },
       },
+      toRecipients: [],
       subject: 'OpenAI verification',
       receivedDateTime: '2026-04-14T10:05:00.000Z',
       bodyPreview: 'Use 334455 to continue',

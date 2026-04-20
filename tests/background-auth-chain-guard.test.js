@@ -109,6 +109,9 @@ async function handleCloudflareSecurityBlocked() {}
 function doesStepUseCompletionSignal() {
   return false;
 }
+async function executeConfiguredLocalCpaSkippedStep() {
+  return false;
+}
 function isRetryableContentScriptTransportError() {
   return false;
 }

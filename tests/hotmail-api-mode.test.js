@@ -39,7 +39,17 @@ test('Hotmail API对接应接入微软邮箱 helper 而不是旧远程服务占�
   );
   assert.match(
     background,
-    /pickVerificationMessageWithTimeFallback\(fetchResult\.messages, \{/,
-    '步骤 4\/7 应继续复用现有验证码筛选与时间回退逻辑'
+    /pickVerificationMessageWithFallback\(fetchResult\.messages, \{/,
+    '步骤 4\/7 应继续复用现有验证码筛选逻辑，并保持时间窗为严格过滤'
+  );
+  assert.match(
+    background,
+    /targetEmail:\s*pollPayload\.targetEmail \|\| ''/,
+    'Hotmail 验证码轮询应把目标邮箱传入筛选条件'
+  );
+  assert.match(
+    background,
+    /body:\s*JSON\.stringify\(\{[\s\S]*targetEmail:\s*pollPayload\.targetEmail \|\| ''/s,
+    '本地 helper 请求体也应携带目标邮箱，避免串邮箱取码'
   );
 });

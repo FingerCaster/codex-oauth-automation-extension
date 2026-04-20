@@ -234,6 +234,7 @@ const PERSISTED_SETTING_DEFAULTS = {
   vpsUrl: '',
   vpsPassword: '',
   localCpaStep9Mode: DEFAULT_LOCAL_CPA_STEP9_MODE,
+  localCpaSkippedSteps: null,
   sub2apiUrl: DEFAULT_SUB2API_URL,
   sub2apiEmail: '',
   sub2apiPassword: '',
@@ -713,6 +714,38 @@ function normalizeLocalCpaStep9Mode(value = '') {
     : DEFAULT_LOCAL_CPA_STEP9_MODE;
 }
 
+function normalizeLocalCpaSkippedSteps(value, options = {}) {
+  const { allowUnset = false } = options;
+  if (value === undefined || value === null || value === '') {
+    return allowUnset ? null : [];
+  }
+
+  const normalizedSteps = [];
+  const seen = new Set();
+  const values = Array.isArray(value) ? value : [value];
+  for (const entry of values) {
+    const step = Number(entry);
+    if (!Number.isFinite(step) || !STEP_IDS.includes(step) || seen.has(step)) {
+      continue;
+    }
+    seen.add(step);
+    normalizedSteps.push(step);
+  }
+
+  normalizedSteps.sort((left, right) => left - right);
+  return normalizedSteps;
+}
+
+function resolveLocalCpaSkippedSteps(state = {}) {
+  const explicitSteps = normalizeLocalCpaSkippedSteps(state?.localCpaSkippedSteps, { allowUnset: true });
+  if (Array.isArray(explicitSteps)) {
+    return explicitSteps;
+  }
+  return normalizeLocalCpaStep9Mode(state?.localCpaStep9Mode) === 'bypass'
+    ? [LAST_STEP_ID]
+    : [];
+}
+
 function normalizeCloudflareDomain(rawValue = '') {
   let value = String(rawValue || '').trim().toLowerCase();
   if (!value) return '';
@@ -847,6 +880,8 @@ function normalizePersistentSettingValue(key, value) {
       return String(value || '');
     case 'localCpaStep9Mode':
       return normalizeLocalCpaStep9Mode(value);
+    case 'localCpaSkippedSteps':
+      return normalizeLocalCpaSkippedSteps(value, { allowUnset: true });
     case 'sub2apiUrl':
       return String(value || '').trim();
     case 'sub2apiEmail':
@@ -969,6 +1004,9 @@ function buildPersistentSettingsPayload(input = {}, options = {}) {
       domains.unshift(payload.cloudflareTempEmailDomain);
     }
     payload.cloudflareTempEmailDomains = domains;
+  }
+  if (payload.localCpaSkippedSteps === null && normalizedInput.localCpaSkippedSteps === undefined) {
+    delete payload.localCpaSkippedSteps;
   }
 
   return payload;
@@ -1606,7 +1644,7 @@ async function ensureHotmailAccountForFlow(options = {}) {
   const state = await getState();
   const accounts = normalizeHotmailAccounts(state.hotmailAccounts);
   const isAccountAllocatable = (candidate) => Boolean(candidate)
-    && candidate.status === 'authorized'
+    && ['authorized', 'pending'].includes(String(candidate.status || '').trim().toLowerCase())
     && !candidate.used
     && Boolean(candidate.refreshToken);
 
@@ -1851,6 +1889,7 @@ async function requestHotmailLocalCode(account, pollPayload = {}) {
         top: 5,
         senderFilters: pollPayload.senderFilters || [],
         subjectFilters: pollPayload.subjectFilters || [],
+        targetEmail: pollPayload.targetEmail || '',
         excludeCodes: pollPayload.excludeCodes || [],
         filterAfterTimestamp: Number(pollPayload.filterAfterTimestamp || 0) || 0,
       }),
@@ -2029,10 +2068,11 @@ async function pollHotmailVerificationCode(step, state, pollPayload = {}) {
       await addLog(`步骤 ${step}：正在通过 API对接 轮询 Hotmail 邮件（${attempt}/${maxAttempts}）...`, 'info');
       const fetchResult = await fetchHotmailMailboxMessages(account, HOTMAIL_MAILBOXES);
       account = fetchResult.account;
-      const matchResult = pickVerificationMessageWithTimeFallback(fetchResult.messages, {
+      const matchResult = pickVerificationMessageWithFallback(fetchResult.messages, {
         afterTimestamp: pollPayload.filterAfterTimestamp || 0,
         senderFilters: pollPayload.senderFilters || [],
         subjectFilters: pollPayload.subjectFilters || [],
+        targetEmail: pollPayload.targetEmail || '',
         excludeCodes: pollPayload.excludeCodes || [],
       });
       const match = matchResult.match;
@@ -3661,9 +3701,71 @@ function shouldBypassStep9ForLocalCpa(state) {
   if (typeof navigationUtils !== 'undefined' && navigationUtils?.shouldBypassStep9ForLocalCpa) {
     return navigationUtils.shouldBypassStep9ForLocalCpa(state);
   }
-  return normalizeLocalCpaStep9Mode(state?.localCpaStep9Mode) === 'bypass'
+  return resolveLocalCpaSkippedSteps(state).includes(LAST_STEP_ID)
     && Boolean(state?.localhostUrl)
     && isLocalCpaUrl(state?.vpsUrl);
+}
+
+function shouldApplyLocalCpaConfiguredStepSkip(state = {}, step) {
+  const normalizedStep = Number(step);
+  if (!Number.isFinite(normalizedStep)) {
+    return false;
+  }
+  if (getPanelMode(state) === 'sub2api' || state?.contributionMode) {
+    return false;
+  }
+  const normalizedVpsUrl = String(state?.vpsUrl || '').trim();
+  if (normalizedVpsUrl && !isLocalCpaUrl(normalizedVpsUrl)) {
+    return false;
+  }
+  return resolveLocalCpaSkippedSteps(state).includes(normalizedStep);
+}
+
+function assertLocalCpaConfiguredStep10SkipReady(state = {}) {
+  if (state.localhostUrl && !isLocalhostOAuthCallbackUrl(state.localhostUrl)) {
+    throw new Error('步骤 9 捕获到的 localhost OAuth 回调地址无效，请重新执行步骤 9。');
+  }
+  if (!state.localhostUrl) {
+    throw new Error('缺少 localhost 回调地址，请先完成步骤 9。');
+  }
+  if (!state.vpsUrl) {
+    throw new Error('尚未填写 CPA 地址，请先在侧边栏输入。');
+  }
+}
+
+async function executeConfiguredLocalCpaSkippedStep(step, state = {}) {
+  const normalizedStep = Number(step);
+  if (!shouldApplyLocalCpaConfiguredStepSkip(state, normalizedStep)) {
+    return false;
+  }
+
+  if (normalizedStep === LAST_STEP_ID) {
+    const completionPayload = {
+      configuredLocalCpaSkip: true,
+    };
+    if (state.localhostUrl) {
+      if (!isLocalhostOAuthCallbackUrl(state.localhostUrl)) {
+        throw new Error('步骤 9 捕获到的 localhost OAuth 回调地址无效，请重新执行步骤 9。');
+      }
+      completionPayload.localhostUrl = state.localhostUrl;
+      completionPayload.verifiedStatus = 'local-auto';
+    }
+    await addLog(`步骤 ${normalizedStep}：命中本地 CPA 跳步配置，当前步骤将直接按完成处理。`, 'info');
+    await completeStepFromBackground(normalizedStep, completionPayload);
+    return true;
+  }
+
+  if (doesStepUseCompletionSignal(normalizedStep)) {
+    await addLog(`步骤 ${normalizedStep}：命中本地 CPA 跳步配置，当前步骤将直接按完成处理。`, 'warn');
+    await completeStepFromBackground(normalizedStep, {
+      configuredLocalCpaSkip: true,
+    });
+    return true;
+  }
+
+  await setStepStatus(normalizedStep, 'skipped');
+  await addLog(`步骤 ${normalizedStep}：命中本地 CPA 跳步配置，当前步骤已跳过。`, 'warn');
+  return true;
 }
 
 function matchesSourceUrlFamily(source, candidateUrl, referenceUrl) {
@@ -3892,6 +3994,8 @@ function isRetryableContentScriptTransportError(error) {
 
 const navigationUtils = self.MultiPageBackgroundNavigationUtils?.createNavigationUtils({
   DEFAULT_SUB2API_URL,
+  LAST_STEP_ID,
+  normalizeLocalCpaSkippedSteps,
   normalizeLocalCpaStep9Mode,
 });
 
@@ -5037,6 +5141,11 @@ async function finalizeDeferredStepExecutionError(step, error) {
 }
 
 async function executeStepViaCompletionSignal(step, timeoutMs = AUTO_RUN_SIGNAL_COMPLETION_TIMEOUT_MS) {
+  const currentState = await getState();
+  if (await executeConfiguredLocalCpaSkippedStep(step, currentState)) {
+    return { configuredLocalCpaSkip: true };
+  }
+
   const completionResultPromise = waitForStepComplete(step, timeoutMs).then(
     payload => ({ ok: true, payload }),
     error => ({ ok: false, error }),
@@ -5265,6 +5374,10 @@ async function executeStep(step, options = {}) {
     // Set flow start time on first step
     if (step === 1 && !state.flowStartTime) {
       await setState({ flowStartTime: Date.now() });
+    }
+
+    if (await executeConfiguredLocalCpaSkippedStep(step, state)) {
+      return;
     }
 
     await stepRegistry.executeStep(step, state);
@@ -6180,7 +6293,6 @@ const step10Executor = self.MultiPageBackgroundStep10?.createStep10Executor({
   reuseOrCreateTab,
   sendToContentScript,
   sendToContentScriptResilient,
-  shouldBypassStep9ForLocalCpa,
   SUB2API_STEP9_RESPONSE_TIMEOUT_MS,
 });
 const stepDefinitions = SHARED_STEP_DEFINITIONS;

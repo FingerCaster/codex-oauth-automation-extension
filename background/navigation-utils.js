@@ -4,6 +4,8 @@
   function createNavigationUtils(deps = {}) {
     const {
       DEFAULT_SUB2API_URL,
+      LAST_STEP_ID,
+      normalizeLocalCpaSkippedSteps,
       normalizeLocalCpaStep9Mode,
     } = deps;
 
@@ -84,7 +86,13 @@
     }
 
     function shouldBypassStep9ForLocalCpa(state) {
-      return normalizeLocalCpaStep9Mode(state?.localCpaStep9Mode) === 'bypass'
+      const explicitSteps = typeof normalizeLocalCpaSkippedSteps === 'function'
+        ? normalizeLocalCpaSkippedSteps(state?.localCpaSkippedSteps, { allowUnset: true })
+        : null;
+      const resolvedSteps = Array.isArray(explicitSteps)
+        ? explicitSteps
+        : (normalizeLocalCpaStep9Mode(state?.localCpaStep9Mode) === 'bypass' ? [LAST_STEP_ID] : []);
+      return resolvedSteps.includes(LAST_STEP_ID)
         && Boolean(state?.localhostUrl)
         && isLocalCpaUrl(state?.vpsUrl);
     }

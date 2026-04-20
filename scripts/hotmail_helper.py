@@ -9,7 +9,7 @@ import time
 import traceback
 from datetime import datetime, timezone
 from email.header import decode_header
-from email.utils import parseaddr, parsedate_to_datetime
+from email.utils import getaddresses, parseaddr, parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -424,6 +424,17 @@ def to_iso_string(timestamp_ms):
 def normalize_message(message_id, raw_bytes, mailbox):
     parsed = email.message_from_bytes(raw_bytes)
     sender_name, sender_addr = parseaddr(parsed.get("From", ""))
+    to_recipients = []
+    for name, address in getaddresses(parsed.get_all("To", [])):
+        normalized_address = str(address or "").strip()
+        if not normalized_address:
+            continue
+        to_recipients.append({
+            "emailAddress": {
+                "address": normalized_address,
+                "name": str(name or "").strip(),
+            }
+        })
     subject = decode_mime_header(parsed.get("Subject", ""))
     body = extract_text_part(parsed)
     timestamp_ms = to_timestamp_ms(parsed.get("Date"))
@@ -437,6 +448,7 @@ def normalize_message(message_id, raw_bytes, mailbox):
                 "name": sender_name.strip(),
             }
         },
+        "toRecipients": to_recipients,
         "bodyPreview": body[:500],
         "receivedDateTime": to_iso_string(timestamp_ms),
         "receivedTimestamp": timestamp_ms,
@@ -491,6 +503,7 @@ def fetch_messages_for_mailboxes(email_addr, access_token, mailboxes, top):
 def normalize_graph_message(message, mailbox):
     sender = message.get("from", {}) or {}
     email_addr = sender.get("emailAddress", {}) if isinstance(sender, dict) else {}
+    recipient_entries = message.get("toRecipients") or []
     received = str(message.get("receivedDateTime") or "").strip()
     return {
         "id": str(message.get("id") or message.get("internetMessageId") or "").strip(),
@@ -502,6 +515,16 @@ def normalize_graph_message(message, mailbox):
                 "name": str(email_addr.get("name") or "").strip(),
             }
         },
+        "toRecipients": [
+            {
+                "emailAddress": {
+                    "address": str(((recipient.get("emailAddress") or {}).get("address") or "")).strip(),
+                    "name": str(((recipient.get("emailAddress") or {}).get("name") or "")).strip(),
+                }
+            }
+            for recipient in recipient_entries
+            if str(((recipient.get("emailAddress") or {}).get("address") or "")).strip()
+        ],
         "bodyPreview": str(message.get("bodyPreview") or "").strip(),
         "receivedDateTime": received,
         "receivedTimestamp": int(datetime.fromisoformat(received.replace("Z", "+00:00")).timestamp() * 1000) if received else 0,
@@ -513,6 +536,7 @@ def normalize_outlook_message(message, mailbox):
     email_addr = sender.get("EmailAddress", {}) if isinstance(sender, dict) else {}
     if isinstance(sender, dict) and not email_addr:
         email_addr = sender.get("emailAddress", {}) if isinstance(sender, dict) else {}
+    recipient_entries = message.get("ToRecipients") or message.get("toRecipients") or []
     received = str(message.get("ReceivedDateTime") or message.get("receivedDateTime") or "").strip()
     return {
         "id": str(message.get("Id") or message.get("id") or "").strip(),
@@ -524,6 +548,16 @@ def normalize_outlook_message(message, mailbox):
                 "name": str(email_addr.get("Name") or email_addr.get("name") or "").strip(),
             }
         },
+        "toRecipients": [
+            {
+                "emailAddress": {
+                    "address": str((((recipient.get("EmailAddress") or recipient.get("emailAddress") or {}).get("Address") or (recipient.get("EmailAddress") or recipient.get("emailAddress") or {}).get("address") or ""))).strip(),
+                    "name": str((((recipient.get("EmailAddress") or recipient.get("emailAddress") or {}).get("Name") or (recipient.get("EmailAddress") or recipient.get("emailAddress") or {}).get("name") or ""))).strip(),
+                }
+            }
+            for recipient in recipient_entries
+            if str((((recipient.get("EmailAddress") or recipient.get("emailAddress") or {}).get("Address") or (recipient.get("EmailAddress") or recipient.get("emailAddress") or {}).get("address") or ""))).strip()
+        ],
         "bodyPreview": str(message.get("BodyPreview") or message.get("bodyPreview") or "").strip(),
         "receivedDateTime": received,
         "receivedTimestamp": int(datetime.fromisoformat(received.replace("Z", "+00:00")).timestamp() * 1000) if received else 0,
@@ -535,7 +569,7 @@ def fetch_graph_messages(access_token, mailbox="INBOX", top=FETCH_LIMIT_DEFAULT)
     url = (
         f"{GRAPH_API_ORIGIN}/v1.0/me/mailFolders/{mailbox_id}/messages"
         f"?$top={max(1, min(int(top or FETCH_LIMIT_DEFAULT), 30))}"
-        f"&$select=id,internetMessageId,subject,from,bodyPreview,receivedDateTime"
+        f"&$select=id,internetMessageId,subject,from,toRecipients,bodyPreview,receivedDateTime"
         f"&$orderby=receivedDateTime desc"
     )
     try:
@@ -558,7 +592,7 @@ def fetch_outlook_api_messages(access_token, mailbox="INBOX", top=FETCH_LIMIT_DE
     url = (
         f"{OUTLOOK_API_ORIGIN}/api/v2.0/me/mailfolders/{mailbox_id}/messages"
         f"?$top={max(1, min(int(top or FETCH_LIMIT_DEFAULT), 30))}"
-        f"&$select=Id,Subject,From,BodyPreview,ReceivedDateTime"
+        f"&$select=Id,Subject,From,ToRecipients,BodyPreview,ReceivedDateTime"
         f"&$orderby=ReceivedDateTime desc"
     )
     try:
@@ -664,23 +698,34 @@ def extract_code(text):
     return ""
 
 
-def select_latest_code(messages, sender_filters, subject_filters, exclude_codes, filter_after_timestamp):
+def select_latest_code(messages, sender_filters, subject_filters, target_email, exclude_codes, filter_after_timestamp):
     sender_keywords = [str(item).strip().lower() for item in sender_filters or [] if str(item).strip()]
     subject_keywords = [str(item).strip().lower() for item in subject_filters or [] if str(item).strip()]
+    normalized_target_email = str(target_email or "").strip().lower()
     excluded = {str(item).strip() for item in exclude_codes or [] if str(item).strip()}
 
-    def match_message(message, apply_time_filter):
+    def match_message(message):
         timestamp = int(message.get("receivedTimestamp") or 0)
-        if apply_time_filter and filter_after_timestamp and timestamp and timestamp < int(filter_after_timestamp):
+        if filter_after_timestamp and timestamp and timestamp < int(filter_after_timestamp):
             return None
 
         sender = str(message.get("from", {}).get("emailAddress", {}).get("address", "")).lower()
         subject = str(message.get("subject", ""))
         preview = str(message.get("bodyPreview", ""))
-        combined = " ".join([sender, subject.lower(), preview.lower()])
+        recipient_addresses = [
+            str(((recipient.get("emailAddress") or {}).get("address") or "")).strip().lower()
+            for recipient in (message.get("toRecipients") or [])
+            if str(((recipient.get("emailAddress") or {}).get("address") or "")).strip()
+        ]
+        combined = " ".join([sender, subject.lower(), preview.lower(), " ".join(recipient_addresses)])
         code = extract_code(" ".join([subject, preview, sender]))
         if not code or code in excluded:
             return None
+
+        if normalized_target_email:
+            target_matched = normalized_target_email in recipient_addresses if recipient_addresses else normalized_target_email in combined
+            if not target_matched:
+                return None
 
         sender_ok = not sender_keywords or any(keyword in combined for keyword in sender_keywords)
         subject_ok = not subject_keywords or any(keyword in combined for keyword in subject_keywords)
@@ -689,20 +734,19 @@ def select_latest_code(messages, sender_filters, subject_filters, exclude_codes,
 
         return {"code": code, "message": message}
 
-    for use_time_fallback in [False, True]:
-        matched = []
-        for message in messages:
-            result = match_message(message, apply_time_filter=not use_time_fallback)
-            if result:
-                matched.append(result)
-        if matched:
-            matched.sort(key=lambda item: int(item["message"].get("receivedTimestamp") or 0), reverse=True)
-            best = matched[0]
-            return {
-                "code": best["code"],
-                "message": best["message"],
-                "usedTimeFallback": use_time_fallback,
-            }
+    matched = []
+    for message in messages:
+        result = match_message(message)
+        if result:
+            matched.append(result)
+    if matched:
+        matched.sort(key=lambda item: int(item["message"].get("receivedTimestamp") or 0), reverse=True)
+        best = matched[0]
+        return {
+            "code": best["code"],
+            "message": best["message"],
+            "usedTimeFallback": False,
+        }
     return {"code": "", "message": None, "usedTimeFallback": False}
 
 
@@ -767,6 +811,7 @@ class HotmailHelperHandler(BaseHTTPRequestHandler):
                     result["messages"],
                     payload.get("senderFilters") or [],
                     payload.get("subjectFilters") or [],
+                    payload.get("targetEmail") or "",
                     payload.get("excludeCodes") or [],
                     int(payload.get("filterAfterTimestamp") or 0),
                 )
