@@ -5,6 +5,7 @@
     const {
       addLog,
       chrome,
+      getLastBrowserProxyError,
       getSourceLabel,
       getState,
       isLocalhostOAuthCallbackUrl,
@@ -286,6 +287,49 @@
       }
     }
 
+    function buildSafeProxyDisplayUrl(rawProxyUrl) {
+      const trimmed = String(rawProxyUrl || '').trim();
+      if (!trimmed) {
+        return '';
+      }
+
+      try {
+        const parsed = new URL(trimmed);
+        if (parsed.username || parsed.password) {
+          parsed.username = parsed.username ? '***' : '';
+          parsed.password = parsed.password ? '***' : '';
+        }
+        return parsed.toString().replace(/\/$/, '');
+      } catch {
+        return trimmed.replace(/\/\/([^@]+)@/, '//***:***@');
+      }
+    }
+
+    function buildErrorPageInjectionMessage(source, lastError, state = {}, tab = null) {
+      const rawMessage = String(lastError?.message || lastError || '').trim();
+      const tabUrl = String(tab?.url || '').trim();
+      const browserProxyUrl = String(state?.browserProxyUrl || '').trim();
+      const safeProxyDisplayUrl = buildSafeProxyDisplayUrl(browserProxyUrl);
+      const lastProxyError = typeof getLastBrowserProxyError === 'function'
+        ? (getLastBrowserProxyError() || null)
+        : null;
+      const sourceLabel = getSourceLabel(source);
+
+      if (!/showing error page/i.test(rawMessage) && !/^chrome-error:\/\//i.test(tabUrl)) {
+        return null;
+      }
+
+      if (!browserProxyUrl) {
+        return `${sourceLabel} 打开失败：当前标签页进入了浏览器错误页，请先确认网络可以正常打开目标站点。`;
+      }
+
+      const proxyDetail = lastProxyError?.error
+        ? `最近一次代理错误：${lastProxyError.error}${lastProxyError.details ? `（${lastProxyError.details}）` : ''}。`
+        : '最近一次浏览器请求已经落入错误页。';
+
+      return `${sourceLabel} 打开失败：当前标签页进入了浏览器错误页，浏览器代理很可能不可用，或代理协议填写错误。当前代理：${safeProxyDisplayUrl || '已配置代理'}。${proxyDetail} 多数用户名密码代理应填写 http://username:password@hostname:port；只有代理服务商明确说明是 HTTPS 代理时才使用 https://username:password@hostname:port。`;
+    }
+
     async function ensureContentScriptReadyOnTab(source, tabId, options = {}) {
       const {
         inject = null,
@@ -342,6 +386,19 @@
         } catch (err) {
           lastError = err;
           console.warn(LOG_PREFIX, `[ensureContentScriptReadyOnTab] inject attempt ${attempt} failed for ${source} tab=${tabId}: ${err?.message || err}`);
+          try {
+            const currentTab = await chrome.tabs.get(tabId);
+            const state = await getState();
+            const enhancedMessage = buildErrorPageInjectionMessage(source, err, state, currentTab);
+            if (enhancedMessage) {
+              throw new Error(enhancedMessage);
+            }
+          } catch (enhancedError) {
+            if (enhancedError?.message && enhancedError.message !== err?.message) {
+              lastError = enhancedError;
+              break;
+            }
+          }
         }
 
         const pongAfterInject = await pingContentScriptOnTab(tabId);
@@ -672,6 +729,7 @@
       closeConflictingTabsForSource,
       closeLocalhostCallbackTabs,
       closeTabsByUrlPrefix,
+      buildErrorPageInjectionMessage,
       ensureContentScriptReadyOnTab,
       flushCommand,
       getContentScriptResponseTimeoutMs,

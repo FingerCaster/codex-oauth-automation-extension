@@ -52,7 +52,9 @@ test('background account history settings are normalized independently from hotm
   const bundle = [
     extractFunction('normalizeHotmailLocalBaseUrl'),
     extractFunction('normalizeAccountRunHistoryHelperBaseUrl'),
+    extractFunction('normalizeBrowserProxySetting'),
     extractFunction('normalizeVerificationResendCount'),
+    extractFunction('normalizePersistentSettingValueWithOptions'),
     extractFunction('normalizePersistentSettingValue'),
   ].join('\n');
 
@@ -62,6 +64,8 @@ const DEFAULT_ACCOUNT_RUN_HISTORY_HELPER_BASE_URL = DEFAULT_HOTMAIL_LOCAL_BASE_U
 const DEFAULT_HOTMAIL_REMOTE_BASE_URL = '';
 const DEFAULT_VERIFICATION_RESEND_COUNT = 4;
 const DEFAULT_SUB2API_PROXY_NAME = '';
+const DEFAULT_BROWSER_PROXY_URL = '';
+const INVALID_PROXY_URL_MESSAGE = '浏览器代理地址格式无效，请使用 https://username:password@hostname:port';
 const HOTMAIL_SERVICE_MODE_REMOTE = 'remote';
 const HOTMAIL_SERVICE_MODE_LOCAL = 'local';
 const VERIFICATION_RESEND_COUNT_MIN = 0;
@@ -70,6 +74,19 @@ const PERSISTED_SETTING_DEFAULTS = {
   autoStepDelaySeconds: null,
   mailProvider: '163',
 };
+function normalizeAutomationProxyUrl(value, options = {}) {
+  const trimmed = String(value || '').trim();
+  if (!trimmed) {
+    return '';
+  }
+  if (trimmed === 'https://user:pass@proxy.example.com:8443') {
+    return trimmed;
+  }
+  if (options.strict) {
+    throw new Error(INVALID_PROXY_URL_MESSAGE);
+  }
+  return '';
+}
 function normalizePanelMode(value) { return value === 'sub2api' ? 'sub2api' : 'cpa'; }
 function normalizeLocalCpaStep9Mode(value) { return value === 'bypass' ? 'bypass' : 'submit'; }
 function normalizeLocalCpaSkippedSteps(value, options = {}) {
@@ -126,6 +143,10 @@ return {
   assert.equal(
     api.normalizePersistentSettingValue('sub2apiDefaultProxyName', ' proxy-a '),
     'proxy-a'
+  );
+  assert.equal(
+    api.normalizePersistentSettingValue('browserProxyUrl', ' https://user:pass@proxy.example.com:8443 '),
+    'https://user:pass@proxy.example.com:8443'
   );
   assert.deepStrictEqual(
     api.normalizePersistentSettingValue('localCpaSkippedSteps', ['10', 3, 'x', 3]),

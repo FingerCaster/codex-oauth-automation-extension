@@ -1,8 +1,10 @@
 // background.js — Service Worker: orchestration, state, tab management, message routing
 
 importScripts(
+  'proxy-utils.js',
   'managed-alias-utils.js',
   'background/account-run-history.js',
+  'background/browser-proxy.js',
   'background/contribution-oauth.js',
   'background/panel-bridge.js',
   'background/generated-email-helpers.js',
@@ -112,6 +114,13 @@ const {
   toNormalizedEmailSet,
 } = self.IcloudUtils;
 const {
+  INVALID_PROXY_URL_MESSAGE,
+  buildAutomationProxyBypassList,
+  normalizeAutomationProxyUrl,
+  normalizeHostForComparison,
+  parseAutomationProxyUrl,
+} = self.MultiPageProxyUtils || {};
+const {
   isRecoverableStep9AuthFailure,
 } = self.MultiPageActivationUtils;
 
@@ -145,6 +154,7 @@ const SUB2API_STEP9_RESPONSE_TIMEOUT_MS = 120000;
 const DEFAULT_SUB2API_URL = 'https://sub2api.hisence.fun/admin/accounts';
 const DEFAULT_SUB2API_GROUP_NAME = 'codex';
 const DEFAULT_SUB2API_PROXY_NAME = '';
+const DEFAULT_BROWSER_PROXY_URL = '';
 const DEFAULT_SUB2API_REDIRECT_URI = 'http://localhost:1455/auth/callback';
 const AUTO_RUN_TIMER_ALARM_NAME = 'auto-run-timer';
 const AUTO_RUN_TIMER_KIND_SCHEDULED_START = 'scheduled_start';
@@ -240,6 +250,7 @@ const PERSISTED_SETTING_DEFAULTS = {
   sub2apiPassword: '',
   sub2apiGroupName: DEFAULT_SUB2API_GROUP_NAME,
   sub2apiDefaultProxyName: DEFAULT_SUB2API_PROXY_NAME,
+  browserProxyUrl: DEFAULT_BROWSER_PROXY_URL,
   customPassword: '',
   autoRunSkipFailures: false,
   autoRunFallbackThreadIntervalMinutes: 0,
@@ -871,6 +882,29 @@ function resolveCloudflareTempEmailPollTargetEmail(state = {}, pollPayload = {},
 }
 
 function normalizePersistentSettingValue(key, value) {
+  return normalizePersistentSettingValueWithOptions(key, value, {});
+}
+
+function normalizeBrowserProxySetting(value, options = {}) {
+  const { strictValidation = false } = options;
+  const trimmed = String(value || '').trim();
+  if (!trimmed) {
+    return '';
+  }
+
+  if (typeof normalizeAutomationProxyUrl === 'function') {
+    return normalizeAutomationProxyUrl(trimmed, { strict: strictValidation });
+  }
+
+  if (!strictValidation) {
+    return trimmed;
+  }
+
+  throw new Error(INVALID_PROXY_URL_MESSAGE || '浏览器代理地址格式无效，请使用 http://username:password@hostname:port 或 https://username:password@hostname:port');
+}
+
+function normalizePersistentSettingValueWithOptions(key, value, options = {}) {
+  const { strictValidation = false } = options;
   switch (key) {
     case 'panelMode':
       return normalizePanelMode(value);
@@ -892,6 +926,8 @@ function normalizePersistentSettingValue(key, value) {
       return String(value || '').trim();
     case 'sub2apiDefaultProxyName':
       return String(value || '').trim();
+    case 'browserProxyUrl':
+      return normalizeBrowserProxySetting(value, { strictValidation });
     case 'customPassword':
       return String(value || '');
     case 'autoRunSkipFailures':
@@ -955,7 +991,7 @@ function normalizePersistentSettingValue(key, value) {
 }
 
 function buildPersistentSettingsPayload(input = {}, options = {}) {
-  const { fillDefaults = false, requireKnownKeys = false } = options;
+  const { fillDefaults = false, requireKnownKeys = false, strictValidation = false } = options;
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     throw new Error('\u914d\u7f6e\u5185\u5bb9\u683c\u5f0f\u65e0\u6548\u3002');
   }
@@ -980,10 +1016,10 @@ function buildPersistentSettingsPayload(input = {}, options = {}) {
   let matchedKeyCount = 0;
   for (const key of PERSISTED_SETTING_KEYS) {
     if (normalizedInput[key] !== undefined) {
-      payload[key] = normalizePersistentSettingValue(key, normalizedInput[key]);
+      payload[key] = normalizePersistentSettingValueWithOptions(key, normalizedInput[key], { strictValidation });
       matchedKeyCount += 1;
     } else if (fillDefaults) {
-      payload[key] = normalizePersistentSettingValue(key, PERSISTED_SETTING_DEFAULTS[key]);
+      payload[key] = normalizePersistentSettingValueWithOptions(key, PERSISTED_SETTING_DEFAULTS[key], { strictValidation: false });
     }
   }
 
@@ -1077,12 +1113,14 @@ async function setState(updates) {
   }
 }
 
-async function setPersistentSettings(updates) {
-  const persistedUpdates = buildPersistentSettingsPayload(updates);
+async function setPersistentSettings(updates, options = {}) {
+  const persistedUpdates = buildPersistentSettingsPayload(updates, options);
 
   if (Object.keys(persistedUpdates).length > 0) {
     await chrome.storage.local.set(persistedUpdates);
   }
+
+  return persistedUpdates;
 }
 
 function buildSettingsExportFilename(date = new Date()) {
@@ -1125,7 +1163,12 @@ async function importSettingsBundle(configBundle) {
   const importedSettings = buildPersistentSettingsPayload(configBundle.settings, {
     fillDefaults: true,
     requireKnownKeys: true,
+    strictValidation: true,
   });
+
+  if (browserProxyController?.syncConfiguredProxy) {
+    await browserProxyController.syncConfiguredProxy({ ...state, ...importedSettings });
+  }
 
   await setPersistentSettings(importedSettings);
 
@@ -4009,9 +4052,24 @@ const loggingStatus = self.MultiPageBackgroundLoggingStatus?.createLoggingStatus
   STOP_ERROR_MESSAGE,
 });
 
+const browserProxyController = self.MultiPageBackgroundBrowserProxy?.createBrowserProxyController({
+  buildAutomationProxyBypassList,
+  chrome,
+  getState,
+  LOG_PREFIX,
+  normalizeAutomationProxyUrl,
+  normalizeHostForComparison,
+  parseAutomationProxyUrl,
+});
+
+browserProxyController?.syncConfiguredProxy?.().catch((error) => {
+  console.warn(LOG_PREFIX, 'Failed to initialize browser proxy settings:', error?.message || error);
+});
+
 const tabRuntime = self.MultiPageBackgroundTabRuntime?.createTabRuntime({
   addLog,
   chrome,
+  getLastBrowserProxyError: () => browserProxyController?.getLastProxyError?.(),
   getSourceLabel,
   getState,
   isLocalhostOAuthCallbackUrl,
@@ -6396,6 +6454,7 @@ const messageRouter = self.MultiPageBackgroundMessageRouter?.createMessageRouter
   startAutoRunLoop,
   pollContributionStatus: (...args) => contributionOAuthManager?.pollContributionStatus?.(...args),
   syncHotmailAccounts,
+  syncConfiguredBrowserProxy: (...args) => browserProxyController?.syncConfiguredProxy?.(...args),
   testHotmailAccountMailAccess,
   upsertHotmailAccount,
   verifyHotmailAccount,

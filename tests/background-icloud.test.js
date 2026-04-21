@@ -54,7 +54,9 @@ function extractFunction(name) {
 const bundle = [
   extractFunction('normalizeEmailGenerator'),
   extractFunction('getEmailGeneratorLabel'),
+  extractFunction('normalizeBrowserProxySetting'),
   extractFunction('normalizeVerificationResendCount'),
+  extractFunction('normalizePersistentSettingValueWithOptions'),
   extractFunction('normalizePersistentSettingValue'),
   extractFunction('finalizeIcloudAliasAfterSuccessfulFlow'),
 ].join('\n');
@@ -68,12 +70,24 @@ const DEFAULT_LOCAL_CPA_STEP9_MODE = 'submit';
 const DEFAULT_HOTMAIL_REMOTE_BASE_URL = '';
 const DEFAULT_HOTMAIL_LOCAL_BASE_URL = 'http://127.0.0.1:17373';
 const DEFAULT_VERIFICATION_RESEND_COUNT = 4;
+const DEFAULT_BROWSER_PROXY_URL = '';
+const INVALID_PROXY_URL_MESSAGE = '浏览器代理地址格式无效，请使用 https://username:password@hostname:port';
 const VERIFICATION_RESEND_COUNT_MIN = 0;
 const VERIFICATION_RESEND_COUNT_MAX = 20;
 const PERSISTED_SETTING_DEFAULTS = {
   mailProvider: '163',
   autoStepDelaySeconds: null,
 };
+function normalizeAutomationProxyUrl(value, options = {}) {
+  const trimmed = String(value || '').trim();
+  if (!trimmed) {
+    return '';
+  }
+  if (options.strict) {
+    throw new Error(INVALID_PROXY_URL_MESSAGE);
+  }
+  return '';
+}
 
 const calls = {
   setUsed: [],

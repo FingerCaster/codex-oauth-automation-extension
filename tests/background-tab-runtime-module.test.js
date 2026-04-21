@@ -98,3 +98,54 @@ test('tab runtime waitForTabComplete aborts promptly when stop is requested', as
     /Flow stopped\./
   );
 });
+
+test('tab runtime surfaces proxy-specific guidance when a tab turns into an error page', async () => {
+  const source = fs.readFileSync('background/tab-runtime.js', 'utf8');
+  const globalScope = {};
+  const api = new Function('self', `${source}; return self.MultiPageBackgroundTabRuntime;`)(globalScope);
+
+  const runtime = api.createTabRuntime({
+    LOG_PREFIX: '[test]',
+    addLog: async () => {},
+    chrome: {
+      tabs: {
+        get: async () => ({
+          id: 9,
+          url: 'chrome-error://chromewebdata/',
+          status: 'complete',
+        }),
+        query: async () => [],
+        sendMessage: async () => null,
+      },
+      scripting: {
+        executeScript: async () => {
+          throw new Error('Frame with ID 0 is showing error page');
+        },
+      },
+    },
+    getLastBrowserProxyError: () => ({ error: 'net::ERR_PROXY_CONNECTION_FAILED' }),
+    getSourceLabel: (sourceName) => sourceName === 'signup-page' ? 'ChatGPT 官网' : (sourceName || 'unknown'),
+    getState: async () => ({
+      browserProxyUrl: 'https://user:pass@proxy.example.com:8443',
+      tabRegistry: {},
+      sourceLastUrls: {},
+    }),
+    matchesSourceUrlFamily: () => false,
+    setState: async () => {},
+    throwIfStopped: () => {},
+  });
+
+  await assert.rejects(
+    runtime.ensureContentScriptReadyOnTab('signup-page', 9, {
+      inject: ['content/signup-page.js'],
+      timeoutMs: 1000,
+      retryDelayMs: 1,
+    }),
+    (error) => {
+      assert.match(error.message, /当前代理：https:\/\/\*\*\*:\*\*\*@proxy\.example\.com:8443/);
+      assert.match(error.message, /多数用户名密码代理应填写 http:\/\/username:password@hostname:port/);
+      assert.doesNotMatch(error.message, /https:\/\/user:pass@proxy\.example\.com:8443/);
+      return true;
+    }
+  );
+});

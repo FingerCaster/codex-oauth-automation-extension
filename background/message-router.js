@@ -82,6 +82,7 @@
       startContributionFlow,
       startAutoRunLoop,
       syncHotmailAccounts,
+      syncConfiguredBrowserProxy,
       testHotmailAccountMailAccess,
       upsertHotmailAccount,
       verifyHotmailAccount,
@@ -502,8 +503,18 @@
         }
 
         case 'SAVE_SETTING': {
-          const updates = buildPersistentSettingsPayload(message.payload || {});
+          const currentState = await getState();
+          const updates = buildPersistentSettingsPayload(message.payload || {}, {
+            strictValidation: true,
+          });
           const sessionUpdates = buildLuckmailSessionSettingsPayload(message.payload || {});
+          if (typeof syncConfiguredBrowserProxy === 'function') {
+            await syncConfiguredBrowserProxy({
+              ...currentState,
+              ...updates,
+              ...sessionUpdates,
+            });
+          }
           await setPersistentSettings(updates);
           await setState({
             ...updates,

@@ -130,6 +130,7 @@ async function flushPromises() {
 
 test('sidepanel html contains account records overlay and manager script', () => {
   const html = fs.readFileSync('sidepanel/sidepanel.html', 'utf8');
+  const proxyUtilsIndex = html.indexOf('<script src="../proxy-utils.js"></script>');
   const managerIndex = html.indexOf('<script src="account-records-manager.js"></script>');
   const sidepanelIndex = html.indexOf('<script src="sidepanel.js"></script>');
 
@@ -141,8 +142,11 @@ test('sidepanel html contains account records overlay and manager script', () =>
   assert.match(html, /id="btn-toggle-account-records-selection"/);
   assert.match(html, /id="btn-delete-selected-account-records"/);
   assert.match(html, /id="input-sub2api-default-proxy"/);
+  assert.match(html, /id="input-browser-proxy-url"/);
+  assert.notEqual(proxyUtilsIndex, -1);
   assert.notEqual(managerIndex, -1);
   assert.notEqual(sidepanelIndex, -1);
+  assert.ok(proxyUtilsIndex < sidepanelIndex);
   assert.ok(managerIndex < sidepanelIndex);
 });
 

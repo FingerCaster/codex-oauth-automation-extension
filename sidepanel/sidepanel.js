@@ -51,6 +51,7 @@ const inputEmail = document.getElementById('input-email');
 const inputPassword = document.getElementById('input-password');
 const btnToggleVpsUrl = document.getElementById('btn-toggle-vps-url');
 const btnToggleVpsPassword = document.getElementById('btn-toggle-vps-password');
+const btnToggleBrowserProxy = document.getElementById('btn-toggle-browser-proxy');
 const btnFetchEmail = document.getElementById('btn-fetch-email');
 const btnTogglePassword = document.getElementById('btn-toggle-password');
 const btnSaveSettings = document.getElementById('btn-save-settings');
@@ -78,6 +79,8 @@ const rowVpsUrl = document.getElementById('row-vps-url');
 const inputVpsUrl = document.getElementById('input-vps-url');
 const rowVpsPassword = document.getElementById('row-vps-password');
 const inputVpsPassword = document.getElementById('input-vps-password');
+const rowBrowserProxyUrl = document.getElementById('row-browser-proxy-url');
+const inputBrowserProxyUrl = document.getElementById('input-browser-proxy-url');
 const rowLocalCpaSkippedSteps = document.getElementById('row-local-cpa-skipped-steps');
 const localCpaSkippedStepsList = document.getElementById('local-cpa-skipped-steps-list');
 const rowSub2ApiUrl = document.getElementById('row-sub2api-url');
@@ -239,6 +242,8 @@ const DEFAULT_LUCKMAIL_BASE_URL = 'https://mails.luckyous.com';
 const DEFAULT_LUCKMAIL_EMAIL_TYPE = 'ms_graph';
 const DISPLAY_TIMEZONE = 'Asia/Shanghai';
 const DEFAULT_ACCOUNT_RUN_HISTORY_HELPER_BASE_URL = 'http://127.0.0.1:17373';
+const INVALID_BROWSER_PROXY_URL_MESSAGE = window.MultiPageProxyUtils?.INVALID_PROXY_URL_MESSAGE
+  || '浏览器代理地址格式无效，请使用 http://username:password@hostname:port 或 https://username:password@hostname:port';
 
 function getManagedAliasUtils() {
   return window.MultiPageManagedAliasUtils || null;
@@ -1348,6 +1353,7 @@ function collectSettingsPayload() {
     panelMode: selectPanelMode.value,
     vpsUrl: inputVpsUrl.value.trim(),
     vpsPassword: inputVpsPassword.value,
+    browserProxyUrl: inputBrowserProxyUrl.value.trim(),
     localCpaSkippedSteps: getSelectedLocalCpaSkippedSteps(),
     sub2apiUrl: inputSub2ApiUrl.value.trim(),
     sub2apiEmail: inputSub2ApiEmail.value.trim(),
@@ -1470,6 +1476,42 @@ function normalizeAccountRunHistoryHelperBaseUrlValue(value = '') {
     return parsed.toString().replace(/\/$/, '');
   } catch {
     return DEFAULT_ACCOUNT_RUN_HISTORY_HELPER_BASE_URL;
+  }
+}
+
+function normalizeBrowserProxyUrlValue(value = '', options = {}) {
+  const { strict = false } = options;
+  const normalize = window.MultiPageProxyUtils?.normalizeAutomationProxyUrl;
+  if (typeof normalize === 'function') {
+    return normalize(value, { strict });
+  }
+
+  const trimmed = String(value || '').trim();
+  if (!trimmed) {
+    return '';
+  }
+
+  if (!strict) {
+    return trimmed;
+  }
+
+  throw new Error(INVALID_BROWSER_PROXY_URL_MESSAGE);
+}
+
+function normalizeBrowserProxyInput(options = {}) {
+  const { showToastOnError = false } = options;
+  if (!inputBrowserProxyUrl) {
+    return true;
+  }
+
+  try {
+    inputBrowserProxyUrl.value = normalizeBrowserProxyUrlValue(inputBrowserProxyUrl.value, { strict: true });
+    return true;
+  } catch (error) {
+    if (showToastOnError) {
+      showToast(error.message || INVALID_BROWSER_PROXY_URL_MESSAGE, 'warn');
+    }
+    return false;
   }
 }
 
@@ -1806,6 +1848,7 @@ function applySettingsState(state) {
   syncPasswordField(state || {});
   inputVpsUrl.value = state?.vpsUrl || '';
   inputVpsPassword.value = state?.vpsPassword || '';
+  inputBrowserProxyUrl.value = normalizeBrowserProxyUrlValue(state?.browserProxyUrl);
   setLocalCpaSkippedSteps(resolveLocalCpaSkippedStepsState(state));
   selectPanelMode.value = state?.panelMode || 'cpa';
   inputSub2ApiUrl.value = state?.sub2apiUrl || '';
@@ -3298,6 +3341,13 @@ function syncVpsPasswordToggleLabel() {
   });
 }
 
+function syncBrowserProxyToggleLabel() {
+  syncToggleButtonLabel(btnToggleBrowserProxy, inputBrowserProxyUrl, {
+    show: '显示浏览器代理',
+    hide: '隐藏浏览器代理',
+  });
+}
+
 async function maybeTakeoverAutoRun(actionLabel) {
   if (!isAutoRunPausedPhase()) {
     return true;
@@ -3434,6 +3484,11 @@ btnToggleVpsUrl.addEventListener('click', () => {
 btnToggleVpsPassword.addEventListener('click', () => {
   inputVpsPassword.type = inputVpsPassword.type === 'password' ? 'text' : 'password';
   syncVpsPasswordToggleLabel();
+});
+
+btnToggleBrowserProxy?.addEventListener('click', () => {
+  inputBrowserProxyUrl.type = inputBrowserProxyUrl.type === 'password' ? 'text' : 'password';
+  syncBrowserProxyToggleLabel();
 });
 
 btnMailLogin?.addEventListener('click', async () => {
@@ -4015,6 +4070,18 @@ inputSub2ApiDefaultProxy.addEventListener('blur', () => {
   saveSettings({ silent: true }).catch(() => { });
 });
 
+inputBrowserProxyUrl?.addEventListener('input', () => {
+  markSettingsDirty(true);
+});
+
+inputBrowserProxyUrl?.addEventListener('blur', () => {
+  if (!normalizeBrowserProxyInput({ showToastOnError: true })) {
+    markSettingsDirty(true);
+    return;
+  }
+  saveSettings({ silent: true }).catch(() => { });
+});
+
 inputEmailPrefix.addEventListener('input', () => {
   maybeClearGeneratedAliasAfterEmailPrefixChange().catch(() => { });
   syncManagedAliasBaseEmailDraftFromInput();
@@ -4303,6 +4370,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         selectPanelMode.value = message.payload.panelMode || 'cpa';
         updatePanelModeUI();
       }
+      if (message.payload.browserProxyUrl !== undefined && inputBrowserProxyUrl) {
+        inputBrowserProxyUrl.value = normalizeBrowserProxyUrlValue(message.payload.browserProxyUrl);
+      }
       if (message.payload.oauthUrl !== undefined) {
         displayOauthUrl.textContent = message.payload.oauthUrl || '等待中...';
         displayOauthUrl.classList.toggle('has-value', Boolean(message.payload.oauthUrl));
@@ -4500,11 +4570,12 @@ setMail2925Mode(DEFAULT_MAIL_2925_MODE);
 initializeReleaseInfo().catch((err) => {
   console.error('Failed to initialize release info:', err);
 });
-restoreState().then(() => {
-  syncPasswordToggleLabel();
-  syncVpsUrlToggleLabel();
-  syncVpsPasswordToggleLabel();
-  updatePanelModeUI();
-  updateButtonStates();
-  updateStatusDisplay(latestState);
+  restoreState().then(() => {
+    syncPasswordToggleLabel();
+    syncVpsUrlToggleLabel();
+    syncVpsPasswordToggleLabel();
+    syncBrowserProxyToggleLabel();
+    updatePanelModeUI();
+    updateButtonStates();
+    updateStatusDisplay(latestState);
 });

@@ -153,6 +153,15 @@
             title="显示管理密钥"></button>
         </div>
       </div>
+      <div class="data-row" id="row-browser-proxy-url">
+        <span class="data-label">浏览器代理</span>
+        <div class="input-with-icon">
+          <input type="password" id="input-browser-proxy-url" class="data-input data-input-with-icon"
+            placeholder="留空则直连；格式 http(s)://username:password@hostname:port" />
+          <button id="btn-toggle-browser-proxy" class="input-icon-btn" type="button" aria-label="显示浏览器代理"
+            title="显示浏览器代理"></button>
+        </div>
+      </div>
       <div class="data-row" id="row-local-cpa-skipped-steps">
         <span class="data-label">本地 CPA 跳步</span>
         <div id="local-cpa-skipped-steps-group" class="multi-choice-group" role="group" aria-label="本地 CPA 跳过步骤">
@@ -655,6 +664,7 @@
 
   <div id="toast-container"></div>
   <input id="input-import-settings-file" type="file" accept=".json,application/json" hidden />
+  <script src="../proxy-utils.js"></script>
   <script src="../managed-alias-utils.js"></script>
   <script src="../icloud-utils.js"></script>
   <script src="../hotmail-utils.js"></script>

@@ -130,6 +130,7 @@ const selectTempEmailDomain = { value: 'mail.example.com' };
 const selectPanelMode = { value: 'cpa' };
 const inputVpsUrl = { value: 'https://panel.example.com' };
 const inputVpsPassword = { value: 'panel-secret' };
+const inputBrowserProxyUrl = { value: 'https://user:pass@proxy.example.com:8443' };
 const inputSub2ApiUrl = { value: 'https://sub.example.com' };
 const inputSub2ApiEmail = { value: 'user@example.com' };
 const inputSub2ApiPassword = { value: 'sub-secret' };
@@ -190,6 +191,7 @@ return {
   assert.equal('customPassword' in contributionPayload, false);
   assert.equal('accountRunHistoryTextEnabled' in contributionPayload, false);
   assert.equal('accountRunHistoryHelperBaseUrl' in contributionPayload, false);
+  assert.equal(contributionPayload.browserProxyUrl, 'https://user:pass@proxy.example.com:8443');
   assert.deepStrictEqual(contributionPayload.localCpaSkippedSteps, [3, 10]);
 
   api.setLatestState({ contributionMode: false });
