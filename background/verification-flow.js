@@ -10,9 +10,11 @@
       confirmCustomVerificationStepBypassRequest,
       getHotmailVerificationPollConfig,
       getHotmailVerificationRequestTimestamp,
+      handleMail2925LimitReachedError,
       getState,
       getTabId,
       HOTMAIL_PROVIDER,
+      isMail2925LimitReachedError,
       isStopError,
       LUCKMAIL_PROVIDER,
       MAIL_2925_VERIFICATION_INTERVAL_MS,
@@ -111,12 +113,15 @@
 
     function getVerificationPollPayload(step, state, overrides = {}) {
       const is2925Provider = state?.mailProvider === '2925';
+      const mail2925MatchTargetEmail = is2925Provider
+        && String(state?.mail2925Mode || '').trim().toLowerCase() === 'receive';
       if (step === 4) {
         return {
           filterAfterTimestamp: is2925Provider ? 0 : getHotmailVerificationRequestTimestamp(4, state),
           senderFilters: ['openai', 'noreply', 'verify', 'auth', 'duckduckgo', 'forward'],
           subjectFilters: ['verify', 'verification', 'code', '验证码', 'confirm'],
           targetEmail: state.email,
+          mail2925MatchTargetEmail,
           maxAttempts: is2925Provider ? MAIL_2925_VERIFICATION_MAX_ATTEMPTS : 5,
           intervalMs: is2925Provider ? MAIL_2925_VERIFICATION_INTERVAL_MS : 3000,
           ...overrides,
@@ -128,6 +133,7 @@
         senderFilters: ['openai', 'noreply', 'verify', 'auth', 'chatgpt', 'duckduckgo', 'forward'],
         subjectFilters: ['verify', 'verification', 'code', '验证码', 'confirm', 'login'],
         targetEmail: String(state?.step8VerificationTargetEmail || '').trim() || state.email,
+        mail2925MatchTargetEmail,
         maxAttempts: is2925Provider ? MAIL_2925_VERIFICATION_MAX_ATTEMPTS : 5,
         intervalMs: is2925Provider ? MAIL_2925_VERIFICATION_INTERVAL_MS : 3000,
         ...overrides,
@@ -237,12 +243,16 @@
       return requestedAt;
     }
 
-    function shouldPreclear2925Mailbox(step, mail) {
-      return mail?.provider === '2925' && (step === 4 || step === 8);
+    function shouldPreclear2925Mailbox(step, mail, options = {}) {
+      if (mail?.provider !== '2925' || (step !== 4 && step !== 8)) {
+        return false;
+      }
+
+      return !(Number(options.filterAfterTimestamp) > 0);
     }
 
     async function clear2925MailboxBeforePolling(step, mail, options = {}) {
-      if (!shouldPreclear2925Mailbox(step, mail)) {
+      if (!shouldPreclear2925Mailbox(step, mail, options)) {
         return;
       }
 
@@ -417,6 +427,12 @@
             if (isStopError(err)) {
               throw err;
             }
+            if (mail?.provider === '2925' && typeof isMail2925LimitReachedError === 'function' && isMail2925LimitReachedError(err)) {
+              if (typeof handleMail2925LimitReachedError === 'function') {
+                throw await handleMail2925LimitReachedError(step, err);
+              }
+              throw err;
+            }
             lastError = err;
             await addLog(`步骤 ${step}：${err.message}`, 'warn');
           }
@@ -552,6 +568,12 @@
           };
         } catch (err) {
           if (isStopError(err)) {
+            throw err;
+          }
+          if (mail?.provider === '2925' && typeof isMail2925LimitReachedError === 'function' && isMail2925LimitReachedError(err)) {
+            if (typeof handleMail2925LimitReachedError === 'function') {
+              throw await handleMail2925LimitReachedError(step, err);
+            }
             throw err;
           }
           lastError = err;

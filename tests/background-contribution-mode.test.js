@@ -421,7 +421,7 @@ test('contribution oauth manager starts session, opens auth url, submits callbac
   assert.equal(startedState.contributionAuthTabId, 88);
   assert.equal(tabCalls.length, 1);
   assert.match(fetchCalls[0].url, /\/start$/);
-  assert.match(String(fetchCalls[0].options.body || ''), /"nickname":"user@example\.com"/);
+  assert.match(String(fetchCalls[0].options.body || ''), /"nickname":""/);
   assert.match(String(fetchCalls[0].options.body || ''), /"qq":""/);
   assert.match(fetchCalls[1].url, /\/status\?/);
 
@@ -511,7 +511,7 @@ return { refreshOAuthUrlBeforeStep6 };
     {
       type: 'contribution',
       options: {
-        nickname: 'user@example.com',
+        nickname: '',
         openAuthTab: false,
         stateOverride: {
           contributionMode: true,
