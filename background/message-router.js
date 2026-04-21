@@ -42,6 +42,7 @@
       handleAutoRunLoopUnhandledError,
       importSettingsBundle,
       invalidateDownstreamAfterStepRestart,
+      invalidateBrowserProxyAffectedTabs,
       isCloudflareSecurityBlockedError,
       isAutoRunLockedState,
       isHotmailProvider,
@@ -60,6 +61,7 @@
       pollContributionStatus,
       registerTab,
       requestStop,
+      releaseBrowserProxyIfUnused,
       handleCloudflareSecurityBlocked,
       resetState,
       resumeAutoRun,
@@ -83,10 +85,27 @@
       startAutoRunLoop,
       syncHotmailAccounts,
       syncConfiguredBrowserProxy,
+      testConfiguredBrowserProxy,
       testHotmailAccountMailAccess,
       upsertHotmailAccount,
       verifyHotmailAccount,
     } = deps;
+
+    async function ensureBrowserProxyReady(stateOverride = null) {
+      if (typeof syncConfiguredBrowserProxy !== 'function') {
+        return { enabled: false };
+      }
+
+      const state = stateOverride || await getState();
+      return syncConfiguredBrowserProxy(state);
+    }
+
+    async function releaseBrowserProxy(options = {}) {
+      if (typeof releaseBrowserProxyIfUnused !== 'function') {
+        return { cleared: false };
+      }
+      return releaseBrowserProxyIfUnused(options);
+    }
 
     async function appendManualAccountRunRecordIfNeeded(status, stateOverride = null, reason = '') {
       if (typeof appendAccountRunRecord !== 'function') {
@@ -196,6 +215,7 @@
             });
           }
           await finalizeIcloudAliasAfterSuccessfulFlow(latestState);
+          await releaseBrowserProxy({ force: true });
           break;
         }
         default:
@@ -289,6 +309,7 @@
           clearStopRequest();
           await clearAutoRunTimerAlarm();
           await resetState();
+          await releaseBrowserProxy({ force: true });
           await addLog('流程已重置', 'info');
           return { ok: true };
         }
@@ -316,6 +337,7 @@
           if (typeof startContributionFlow !== 'function') {
             throw new Error('贡献 OAuth 流程尚未接入。');
           }
+          await ensureBrowserProxyReady(state);
           return {
             ok: true,
             state: await startContributionFlow({
@@ -398,6 +420,7 @@
             await setPersistentSettings({ emailPrefix: message.payload.emailPrefix });
             await setState({ emailPrefix: message.payload.emailPrefix });
           }
+          await ensureBrowserProxyReady();
           if (doesStepUseCompletionSignal(step)) {
             await executeStepViaCompletionSignal(step);
           } else {
@@ -427,6 +450,7 @@
           const autoRunSkipFailures = Boolean(message.payload?.autoRunSkipFailures);
           const mode = message.payload?.mode === 'continue' ? 'continue' : 'restart';
           await setState({ autoRunSkipFailures });
+          await ensureBrowserProxyReady();
           startAutoRunLoop(totalRuns, { autoRunSkipFailures, mode });
           return { ok: true };
         }
@@ -508,6 +532,8 @@
             strictValidation: true,
           });
           const sessionUpdates = buildLuckmailSessionSettingsPayload(message.payload || {});
+          const browserProxyChanged = Object.prototype.hasOwnProperty.call(updates, 'browserProxyUrl')
+            && String(updates.browserProxyUrl || '') !== String(currentState?.browserProxyUrl || '');
           if (typeof syncConfiguredBrowserProxy === 'function') {
             await syncConfiguredBrowserProxy({
               ...currentState,
@@ -520,7 +546,37 @@
             ...updates,
             ...sessionUpdates,
           });
+          if (browserProxyChanged && typeof invalidateBrowserProxyAffectedTabs === 'function') {
+            await invalidateBrowserProxyAffectedTabs();
+          }
           return { ok: true, state: await getState() };
+        }
+
+        case 'TEST_BROWSER_PROXY': {
+          if (typeof testConfiguredBrowserProxy !== 'function') {
+            throw new Error('浏览器代理测试能力尚未接入。');
+          }
+          return await testConfiguredBrowserProxy();
+        }
+
+        case 'ENSURE_BROWSER_PROXY': {
+          const result = await ensureBrowserProxyReady();
+          return {
+            ok: true,
+            ...result,
+          };
+        }
+
+        case 'CLEAR_BROWSER_PROXY_RUNTIME': {
+          const result = await releaseBrowserProxy({ force: true });
+          if (result?.error) {
+            throw new Error(result.error);
+          }
+          await addLog('已手动清理当前浏览器代理，当前恢复直连；下次执行前会按配置自动重新应用。', 'info');
+          return {
+            ok: true,
+            ...result,
+          };
         }
 
         case 'EXPORT_SETTINGS': {
@@ -650,6 +706,7 @@
           if (isAutoRunLockedState(state)) {
             throw new Error('自动流程运行中，当前不能手动获取邮箱。');
           }
+          await ensureBrowserProxyReady(state);
           const email = await fetchGeneratedEmail(state, message.payload || {});
           await resumeAutoRun();
           return { ok: true, email };
@@ -661,6 +718,7 @@
           if (isAutoRunLockedState(state)) {
             throw new Error('自动流程运行中，当前不能手动获取邮箱。');
           }
+          await ensureBrowserProxyReady(state);
           const email = await fetchGeneratedEmail(state, { ...(message.payload || {}), generator: 'duck' });
           await resumeAutoRun();
           return { ok: true, email };
@@ -668,11 +726,13 @@
 
         case 'CHECK_ICLOUD_SESSION': {
           clearStopRequest();
+          await ensureBrowserProxyReady();
           return await checkIcloudSession();
         }
 
         case 'LIST_ICLOUD_ALIASES': {
           clearStopRequest();
+          await ensureBrowserProxyReady();
           const aliases = await listIcloudAliases();
           return { ok: true, aliases };
         }

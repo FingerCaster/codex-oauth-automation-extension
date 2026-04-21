@@ -52,6 +52,8 @@ const inputPassword = document.getElementById('input-password');
 const btnToggleVpsUrl = document.getElementById('btn-toggle-vps-url');
 const btnToggleVpsPassword = document.getElementById('btn-toggle-vps-password');
 const btnToggleBrowserProxy = document.getElementById('btn-toggle-browser-proxy');
+const btnTestBrowserProxy = document.getElementById('btn-test-browser-proxy');
+const btnClearBrowserProxyRuntime = document.getElementById('btn-clear-browser-proxy-runtime');
 const btnFetchEmail = document.getElementById('btn-fetch-email');
 const btnTogglePassword = document.getElementById('btn-toggle-password');
 const btnSaveSettings = document.getElementById('btn-save-settings');
@@ -81,6 +83,7 @@ const rowVpsPassword = document.getElementById('row-vps-password');
 const inputVpsPassword = document.getElementById('input-vps-password');
 const rowBrowserProxyUrl = document.getElementById('row-browser-proxy-url');
 const inputBrowserProxyUrl = document.getElementById('input-browser-proxy-url');
+const browserProxyTestStatus = document.getElementById('browser-proxy-test-status');
 const rowLocalCpaSkippedSteps = document.getElementById('row-local-cpa-skipped-steps');
 const localCpaSkippedStepsList = document.getElementById('local-cpa-skipped-steps-list');
 const rowSub2ApiUrl = document.getElementById('row-sub2api-url');
@@ -837,6 +840,25 @@ async function waitForSettingsSaveIdle() {
   }
 }
 
+async function flushPendingSettingsBeforeAction() {
+  clearTimeout(settingsAutoSaveTimer);
+
+  if (!normalizeBrowserProxyInput({ showToastOnError: true })) {
+    throw new Error(INVALID_BROWSER_PROXY_URL_MESSAGE);
+  }
+
+  await waitForSettingsSaveIdle();
+  if (settingsDirty) {
+    await saveSettings({ silent: true });
+  }
+
+  await chrome.runtime.sendMessage({
+    type: 'ENSURE_BROWSER_PROXY',
+    source: 'sidepanel',
+    payload: {},
+  });
+}
+
 async function flushPendingSettingsBeforeExport() {
   clearTimeout(settingsAutoSaveTimer);
   await waitForSettingsSaveIdle();
@@ -1515,6 +1537,87 @@ function normalizeBrowserProxyInput(options = {}) {
   }
 }
 
+function setBrowserProxyTestStatusText(text = '', options = {}) {
+  if (!browserProxyTestStatus) {
+    return;
+  }
+
+  const normalizedText = String(text || '').trim() || '未测试';
+  browserProxyTestStatus.textContent = normalizedText;
+  browserProxyTestStatus.classList.toggle('has-value', normalizedText !== '未测试');
+  if (options.title !== undefined) {
+    browserProxyTestStatus.title = options.title || '';
+  }
+}
+
+function getPendingBrowserProxyTestStatusText() {
+  return inputBrowserProxyUrl?.value?.trim()
+    ? '已配置代理，待测试'
+    : '当前直连';
+}
+
+function formatBrowserProxySummary(proxy = null) {
+  if (!proxy?.host || !proxy?.port) {
+    return '直连';
+  }
+  return `${proxy.scheme || 'http'}://${proxy.host}:${proxy.port}`;
+}
+
+function formatBrowserProxyTestStatus(result = {}) {
+  if (result?.ok && result?.ip) {
+    return result?.proxy
+      ? `代理出口 ${result.ip}`
+      : `直连出口 ${result.ip}`;
+  }
+
+  return result?.proxy
+    ? '代理测试失败'
+    : '直连测试失败';
+}
+
+function buildBrowserProxyTestToastMessage(result = {}) {
+  const proxyLabel = formatBrowserProxySummary(result?.proxy);
+  const endpointLabel = result?.endpoint ? `，检测源 ${result.endpoint}` : '';
+  const proxyErrorLabel = result?.lastProxyError?.error
+    ? `，最近代理错误 ${result.lastProxyError.error}`
+    : '';
+
+  if (result?.ok && result?.ip) {
+    return `${result.proxy ? '代理' : '直连'}测试成功：当前出口 IP 为 ${result.ip}，${proxyLabel}${endpointLabel}${proxyErrorLabel}`;
+  }
+
+  return `${result.proxy ? '代理' : '直连'}测试失败：${result?.errorMessage || '无法获取当前出口 IP'}，${proxyLabel}${proxyErrorLabel}`;
+}
+
+async function clearActiveBrowserProxyRuntime() {
+  const response = await chrome.runtime.sendMessage({
+    type: 'CLEAR_BROWSER_PROXY_RUNTIME',
+    source: 'sidepanel',
+    payload: {},
+  });
+
+  if (response?.error) {
+    throw new Error(response.error);
+  }
+
+  const hasConfiguredProxy = Boolean(inputBrowserProxyUrl?.value?.trim());
+  setBrowserProxyTestStatusText('当前直连', {
+    title: hasConfiguredProxy
+      ? '已手动清理当前浏览器代理；代理地址配置仍会保留，下次执行前会自动重新应用。'
+      : '已手动清理当前浏览器代理，当前恢复直连。',
+  });
+
+  showToast(
+    hasConfiguredProxy
+      ? '已手动清理当前浏览器代理，当前恢复直连；下次执行会按配置自动重新应用。'
+      : '已手动清理当前浏览器代理，当前恢复直连。',
+    'success',
+    3500
+  );
+
+  return response;
+}
+
 function getLocalCpaSkippedStepInputs() {
   return Array.from(localCpaSkippedStepsList?.querySelectorAll('[data-local-cpa-skipped-step]') || []);
 }
@@ -1841,6 +1944,7 @@ function renderStepsList() {
 // ============================================================
 
 function applySettingsState(state) {
+  const previousBrowserProxyUrl = String(latestState?.browserProxyUrl || '').trim();
   syncLatestState(state);
   syncAutoRunState(state);
 
@@ -1849,6 +1953,9 @@ function applySettingsState(state) {
   inputVpsUrl.value = state?.vpsUrl || '';
   inputVpsPassword.value = state?.vpsPassword || '';
   inputBrowserProxyUrl.value = normalizeBrowserProxyUrlValue(state?.browserProxyUrl);
+  if (String(state?.browserProxyUrl || '').trim() !== previousBrowserProxyUrl) {
+    setBrowserProxyTestStatusText(getPendingBrowserProxyTestStatusText());
+  }
   setLocalCpaSkippedSteps(resolveLocalCpaSkippedStepsState(state));
   selectPanelMode.value = state?.panelMode || 'cpa';
   inputSub2ApiUrl.value = state?.sub2apiUrl || '';
@@ -3406,6 +3513,7 @@ stepsList?.addEventListener('click', async (event) => {
     if (!(await maybeTakeoverAutoRun(`执行步骤 ${step}`))) {
       return;
     }
+    await flushPendingSettingsBeforeAction();
     if (step === 3) {
       if (inputPassword.value !== (latestState?.customPassword || '')) {
         await chrome.runtime.sendMessage({
@@ -3468,6 +3576,7 @@ btnFetchEmail.addEventListener('click', async () => {
   if (selectMailProvider.value === 'hotmail-api' || isLuckmailProvider() || isCustomMailProvider()) {
     return;
   }
+  await flushPendingSettingsBeforeAction();
   await fetchGeneratedEmail().catch(() => { });
 });
 
@@ -3491,6 +3600,44 @@ btnToggleBrowserProxy?.addEventListener('click', () => {
   syncBrowserProxyToggleLabel();
 });
 
+btnTestBrowserProxy?.addEventListener('click', async () => {
+  try {
+    btnTestBrowserProxy.disabled = true;
+    setBrowserProxyTestStatusText('测试中...');
+    await flushPendingSettingsBeforeAction();
+    const response = await chrome.runtime.sendMessage({
+      type: 'TEST_BROWSER_PROXY',
+      source: 'sidepanel',
+      payload: {},
+    });
+
+    if (response?.error) {
+      throw new Error(response.error);
+    }
+
+    setBrowserProxyTestStatusText(formatBrowserProxyTestStatus(response), {
+      title: buildBrowserProxyTestToastMessage(response),
+    });
+    showToast(buildBrowserProxyTestToastMessage(response), response?.ok ? 'success' : 'warn', 3500);
+  } catch (err) {
+    setBrowserProxyTestStatusText('代理测试失败');
+    showToast(err.message, 'error');
+  } finally {
+    btnTestBrowserProxy.disabled = false;
+  }
+});
+
+btnClearBrowserProxyRuntime?.addEventListener('click', async () => {
+  try {
+    btnClearBrowserProxyRuntime.disabled = true;
+    await clearActiveBrowserProxyRuntime();
+  } catch (err) {
+    showToast(err.message, 'error');
+  } finally {
+    btnClearBrowserProxyRuntime.disabled = false;
+  }
+});
+
 btnMailLogin?.addEventListener('click', async () => {
   const config = getMailProviderLoginConfig();
   const loginUrl = getMailProviderLoginUrl();
@@ -3499,6 +3646,7 @@ btnMailLogin?.addEventListener('click', async () => {
   }
 
   try {
+    await flushPendingSettingsBeforeAction();
     await chrome.tabs.create({ url: loginUrl, active: true });
   } catch (err) {
     showToast(`打开${config.label}失败：${err.message}`, 'error');
@@ -3583,6 +3731,8 @@ autoStartModal?.addEventListener('click', (event) => {
 btnAutoStartClose?.addEventListener('click', () => resolveModalChoice(null));
 
 async function startAutoRunFromCurrentSettings() {
+  await flushPendingSettingsBeforeAction();
+
   const totalRuns = getRunCountValue();
   let mode = 'restart';
   const autoRunSkipFailures = inputAutoSkipFailures.checked;
@@ -3711,6 +3861,7 @@ btnAutoContinue.addEventListener('click', async () => {
     );
     return;
   }
+  await flushPendingSettingsBeforeAction();
   autoContinueBar.style.display = 'none';
   await chrome.runtime.sendMessage({ type: 'RESUME_AUTO_RUN', source: 'sidepanel', payload: { email } });
 });
@@ -3718,6 +3869,7 @@ btnAutoContinue.addEventListener('click', async () => {
 btnAutoRunNow?.addEventListener('click', async () => {
   try {
     btnAutoRunNow.disabled = true;
+    await flushPendingSettingsBeforeAction();
     const waitingInterval = currentAutoRun.phase === 'waiting_interval';
     await chrome.runtime.sendMessage({
       type: waitingInterval ? 'SKIP_AUTO_RUN_COUNTDOWN' : 'START_SCHEDULED_AUTO_RUN_NOW',
@@ -4072,11 +4224,14 @@ inputSub2ApiDefaultProxy.addEventListener('blur', () => {
 
 inputBrowserProxyUrl?.addEventListener('input', () => {
   markSettingsDirty(true);
+  setBrowserProxyTestStatusText('配置已修改，待测试');
+  scheduleSettingsAutoSave();
 });
 
 inputBrowserProxyUrl?.addEventListener('blur', () => {
   if (!normalizeBrowserProxyInput({ showToastOnError: true })) {
     markSettingsDirty(true);
+    setBrowserProxyTestStatusText('代理地址无效');
     return;
   }
   saveSettings({ silent: true }).catch(() => { });
@@ -4372,6 +4527,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       }
       if (message.payload.browserProxyUrl !== undefined && inputBrowserProxyUrl) {
         inputBrowserProxyUrl.value = normalizeBrowserProxyUrlValue(message.payload.browserProxyUrl);
+        setBrowserProxyTestStatusText(getPendingBrowserProxyTestStatusText());
       }
       if (message.payload.oauthUrl !== undefined) {
         displayOauthUrl.textContent = message.payload.oauthUrl || '等待中...';
@@ -4567,6 +4723,7 @@ updateConfigMenuControls();
 renderLocalCpaSkippedStepsOptions();
 setLocalCpaSkippedSteps(DEFAULT_LOCAL_CPA_SKIPPED_STEPS);
 setMail2925Mode(DEFAULT_MAIL_2925_MODE);
+setBrowserProxyTestStatusText('当前直连');
 initializeReleaseInfo().catch((err) => {
   console.error('Failed to initialize release info:', err);
 });

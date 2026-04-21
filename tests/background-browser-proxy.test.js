@@ -161,3 +161,118 @@ test('browser proxy controller applies fixed proxy settings and serves matching 
   await controller.syncConfiguredProxy({ browserProxyUrl: '' });
   assert.equal(clearCalls.length, 1);
 });
+
+test('browser proxy controller can test the current exit ip through configured proxy', async () => {
+  const source = fs.readFileSync('background/browser-proxy.js', 'utf8');
+  const globalScope = {};
+  const api = new Function('self', `${source}; return self.MultiPageBackgroundBrowserProxy;`)(globalScope);
+
+  const fetchCalls = [];
+  const controller = api.createBrowserProxyController({
+    buildAutomationProxyBypassList: proxyUtils.buildAutomationProxyBypassList,
+    chrome: {
+      proxy: {
+        settings: {
+          set: async () => {},
+          clear: async () => {},
+        },
+        onProxyError: {
+          addListener() {},
+        },
+      },
+      storage: {
+        onChanged: {
+          addListener() {},
+        },
+      },
+      webRequest: {
+        onAuthRequired: {
+          addListener() {},
+        },
+        onCompleted: {
+          addListener() {},
+        },
+        onErrorOccurred: {
+          addListener() {},
+        },
+      },
+    },
+    fetch: async (url) => {
+      fetchCalls.push(url);
+      return {
+        ok: true,
+        json: async () => ({ ip: '203.0.113.10' }),
+      };
+    },
+    getState: async () => ({ browserProxyUrl: 'http://user:pass@proxy.example.com:8080' }),
+    LOG_PREFIX: '[test]',
+    normalizeAutomationProxyUrl: proxyUtils.normalizeAutomationProxyUrl,
+    normalizeHostForComparison: proxyUtils.normalizeHostForComparison,
+    parseAutomationProxyUrl: proxyUtils.parseAutomationProxyUrl,
+  });
+
+  await controller.syncConfiguredProxy();
+  const result = await controller.testProxyConnection();
+
+  assert.equal(result.ok, true);
+  assert.equal(result.ip, '203.0.113.10');
+  assert.deepStrictEqual(result.proxy, {
+    scheme: 'http',
+    host: 'proxy.example.com',
+    port: 8080,
+    hasAuth: true,
+  });
+  assert.equal(result.endpoint, 'ipify');
+  assert.equal(fetchCalls.length, 1);
+  assert.match(fetchCalls[0], /^https:\/\/api\.ipify\.org\?format=json&_/);
+});
+
+test('browser proxy controller supports best-effort proxy cleanup for shutdown paths', () => {
+  const source = fs.readFileSync('background/browser-proxy.js', 'utf8');
+  const globalScope = {};
+  const api = new Function('self', `${source}; return self.MultiPageBackgroundBrowserProxy;`)(globalScope);
+
+  const clearCalls = [];
+  const controller = api.createBrowserProxyController({
+    buildAutomationProxyBypassList: proxyUtils.buildAutomationProxyBypassList,
+    chrome: {
+      proxy: {
+        settings: {
+          set: async () => {},
+          clear: async (payload) => {
+            clearCalls.push(payload);
+          },
+        },
+        onProxyError: {
+          addListener() {},
+        },
+      },
+      storage: {
+        onChanged: {
+          addListener() {},
+        },
+      },
+      webRequest: {
+        onAuthRequired: {
+          addListener() {},
+        },
+        onCompleted: {
+          addListener() {},
+        },
+        onErrorOccurred: {
+          addListener() {},
+        },
+      },
+    },
+    getState: async () => ({ browserProxyUrl: 'http://user:pass@proxy.example.com:8080' }),
+    LOG_PREFIX: '[test]',
+    normalizeAutomationProxyUrl: proxyUtils.normalizeAutomationProxyUrl,
+    normalizeHostForComparison: proxyUtils.normalizeHostForComparison,
+    parseAutomationProxyUrl: proxyUtils.parseAutomationProxyUrl,
+  });
+
+  const cleared = controller.clearProxySettingsBestEffort();
+
+  assert.equal(cleared, true);
+  assert.deepStrictEqual(clearCalls, [{ scope: 'regular' }]);
+});

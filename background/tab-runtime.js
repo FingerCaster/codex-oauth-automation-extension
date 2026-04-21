@@ -85,6 +85,60 @@
       return state.tabRegistry || {};
     }
 
+    async function invalidateTrackedSources(sources = []) {
+      const targetSources = Array.from(new Set(
+        (Array.isArray(sources) ? sources : [sources])
+          .map((value) => String(value || '').trim())
+          .filter(Boolean)
+      ));
+      if (!targetSources.length) {
+        return { sources: [], updated: false };
+      }
+
+      const registry = await getTabRegistry();
+      let updated = false;
+
+      for (const source of targetSources) {
+        if (!registry[source]) {
+          continue;
+        }
+        registry[source] = null;
+        updated = true;
+      }
+
+      if (updated) {
+        await setState({ tabRegistry: registry });
+      }
+
+      return { sources: targetSources, updated };
+    }
+
+    async function removeTrackedTabById(tabId) {
+      if (!Number.isInteger(tabId)) {
+        return { sources: [], updated: false };
+      }
+
+      const registry = await getTabRegistry();
+      const removedSources = [];
+
+      for (const [source, entry] of Object.entries(registry)) {
+        if (Number(entry?.tabId) !== tabId) {
+          continue;
+        }
+        registry[source] = null;
+        removedSources.push(source);
+      }
+
+      if (removedSources.length) {
+        await setState({ tabRegistry: registry });
+      }
+
+      return {
+        sources: removedSources,
+        updated: removedSources.length > 0,
+      };
+    }
+
     async function registerTab(source, tabId) {
       const registry = await getTabRegistry();
       registry[source] = { tabId, ready: true };
@@ -736,12 +790,14 @@
       getMessageDebugLabel,
       getTabId,
       getTabRegistry,
+      invalidateTrackedSources,
       isLocalhostOAuthCallbackTabMatch,
       isTabAlive,
       pingContentScriptOnTab,
       queueCommand,
       registerTab,
       rememberSourceLastUrl,
+      removeTrackedTabById,
       reuseOrCreateTab,
       sendTabMessageWithTimeout,
       sendToContentScript,

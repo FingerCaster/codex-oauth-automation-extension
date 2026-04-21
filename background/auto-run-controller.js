@@ -28,6 +28,7 @@
       launchAutoRunTimerPlan,
       normalizeAutoRunFallbackThreadIntervalMinutes,
       persistAutoRunTimerPlan,
+      releaseBrowserProxyIfUnused,
       resetState,
       runAutoSequenceFromStep,
       runtime,
@@ -94,6 +95,13 @@
       return Array.from(counts.entries())
         .map(([reason, count]) => (count > 1 ? `${reason}（${count}次）` : reason))
         .join('；');
+    }
+
+    async function releaseBrowserProxy(options = {}) {
+      if (typeof releaseBrowserProxyIfUnused !== 'function') {
+        return { cleared: false };
+      }
+      return releaseBrowserProxyIfUnused(options);
     }
 
     async function logAutoRunFinalSummary(totalRuns, roundSummaries = []) {
@@ -243,6 +251,7 @@
         scheduledAutoRunPlan: null,
       });
       clearStopRequest();
+      await releaseBrowserProxy({ force: true });
     }
 
     function startAutoRunLoop(totalRuns, options = {}) {
@@ -671,6 +680,7 @@
       if (parkedByTimer) {
         runtime.set({ autoRunActive: false });
         clearStopRequest();
+        await releaseBrowserProxy({ force: true });
         return;
       }
 
@@ -712,6 +722,7 @@
         }),
       });
       clearStopRequest();
+      await releaseBrowserProxy({ force: true });
     }
 
     return {

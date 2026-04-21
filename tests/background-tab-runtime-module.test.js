@@ -99,6 +99,100 @@ test('tab runtime waitForTabComplete aborts promptly when stop is requested', as
   );
 });
 
+test('tab runtime can invalidate tracked sources after proxy changes', async () => {
+  const source = fs.readFileSync('background/tab-runtime.js', 'utf8');
+  const globalScope = {};
+  const api = new Function('self', `${source}; return self.MultiPageBackgroundTabRuntime;`)(globalScope);
+
+  const state = {
+    tabRegistry: {
+      'signup-page': { tabId: 7, ready: true },
+      'vps-panel': { tabId: 8, ready: true },
+      'mail-163': { tabId: 9, ready: true },
+    },
+    sourceLastUrls: {},
+  };
+
+  const runtime = api.createTabRuntime({
+    LOG_PREFIX: '[test]',
+    addLog: async () => {},
+    chrome: {
+      tabs: {
+        get: async () => ({ id: 1, status: 'complete' }),
+        query: async () => [],
+        sendMessage: async () => null,
+      },
+      scripting: {
+        executeScript: async () => {},
+      },
+    },
+    getSourceLabel: (sourceName) => sourceName || 'unknown',
+    getState: async () => state,
+    matchesSourceUrlFamily: () => false,
+    setState: async (updates) => {
+      Object.assign(state, updates);
+    },
+    throwIfStopped: () => {},
+  });
+
+  const result = await runtime.invalidateTrackedSources(['signup-page', 'mail-163']);
+
+  assert.deepStrictEqual(result, {
+    sources: ['signup-page', 'mail-163'],
+    updated: true,
+  });
+  assert.equal(state.tabRegistry['signup-page'], null);
+  assert.deepStrictEqual(state.tabRegistry['vps-panel'], { tabId: 8, ready: true });
+  assert.equal(state.tabRegistry['mail-163'], null);
+});
+
+test('tab runtime can remove tracked entries when a tab is closed', async () => {
+  const source = fs.readFileSync('background/tab-runtime.js', 'utf8');
+  const globalScope = {};
+  const api = new Function('self', `${source}; return self.MultiPageBackgroundTabRuntime;`)(globalScope);
+
+  const state = {
+    tabRegistry: {
+      'signup-page': { tabId: 7, ready: true },
+      'mail-163': { tabId: 9, ready: true },
+      'vps-panel': { tabId: 11, ready: true },
+    },
+    sourceLastUrls: {},
+  };
+
+  const runtime = api.createTabRuntime({
+    LOG_PREFIX: '[test]',
+    addLog: async () => {},
+    chrome: {
+      tabs: {
+        get: async () => ({ id: 1, status: 'complete' }),
+        query: async () => [],
+        sendMessage: async () => null,
+      },
+      scripting: {
+        executeScript: async () => {},
+      },
+    },
+    getSourceLabel: (sourceName) => sourceName || 'unknown',
+    getState: async () => state,
+    matchesSourceUrlFamily: () => false,
+    setState: async (updates) => {
+      Object.assign(state, updates);
+    },
+    throwIfStopped: () => {},
+  });
+
+  const result = await runtime.removeTrackedTabById(9);
+
+  assert.deepStrictEqual(result, {
+    sources: ['mail-163'],
+    updated: true,
+  });
+  assert.deepStrictEqual(state.tabRegistry['signup-page'], { tabId: 7, ready: true });
+  assert.equal(state.tabRegistry['mail-163'], null);
+  assert.deepStrictEqual(state.tabRegistry['vps-panel'], { tabId: 11, ready: true });
+});
+
 test('tab runtime surfaces proxy-specific guidance when a tab turns into an error page', async () => {
   const source = fs.readFileSync('background/tab-runtime.js', 'utf8');
   const globalScope = {};

@@ -155,6 +155,16 @@ const DEFAULT_SUB2API_URL = 'https://sub2api.hisence.fun/admin/accounts';
 const DEFAULT_SUB2API_GROUP_NAME = 'codex';
 const DEFAULT_SUB2API_PROXY_NAME = '';
 const DEFAULT_BROWSER_PROXY_URL = '';
+const BROWSER_PROXY_AFFECTED_SOURCES = [
+  'signup-page',
+  'duck-mail',
+  'qq-mail',
+  'mail-163',
+  'gmail-mail',
+  'icloud-mail',
+  'inbucket-mail',
+  'mail-2925',
+];
 const DEFAULT_SUB2API_REDIRECT_URI = 'http://localhost:1455/auth/callback';
 const AUTO_RUN_TIMER_ALARM_NAME = 'auto-run-timer';
 const AUTO_RUN_TIMER_KIND_SCHEDULED_START = 'scheduled_start';
@@ -4082,6 +4092,86 @@ const tabRuntime = self.MultiPageBackgroundTabRuntime?.createTabRuntime({
   throwIfStopped,
 });
 
+function getTrackedBrowserProxyAffectedSources(state = null) {
+  const registry = state?.tabRegistry || {};
+  return BROWSER_PROXY_AFFECTED_SOURCES.filter((source) => Number.isInteger(registry?.[source]?.tabId));
+}
+
+async function ensureConfiguredBrowserProxyActive(stateOverride = null) {
+  if (!browserProxyController?.syncConfiguredProxy) {
+    return { enabled: false };
+  }
+
+  const state = stateOverride || await getState();
+  return browserProxyController.syncConfiguredProxy(state);
+}
+
+async function releaseBrowserProxyIfUnused(options = {}) {
+  const { force = false } = options;
+
+  if (!browserProxyController?.clearProxySettings) {
+    return { cleared: false, reason: 'unsupported' };
+  }
+
+  try {
+    if (!force) {
+      const state = await getState();
+      const trackedSources = getTrackedBrowserProxyAffectedSources(state);
+      if (trackedSources.length) {
+        return {
+          cleared: false,
+          sources: trackedSources,
+        };
+      }
+    }
+
+    await browserProxyController.clearProxySettings();
+    return { cleared: true };
+  } catch (error) {
+    console.warn(LOG_PREFIX, 'Failed to release browser proxy:', error?.message || error);
+    return {
+      cleared: false,
+      error: error?.message || String(error || '释放浏览器代理失败'),
+    };
+  }
+}
+
+async function handleTrackedTabRemoved(tabId) {
+  if (!tabRuntime?.removeTrackedTabById) {
+    return { updated: false, sources: [] };
+  }
+
+  const result = await tabRuntime.removeTrackedTabById(tabId);
+  if (!result?.updated) {
+    return result;
+  }
+
+  const removedSources = Array.isArray(result.sources) ? result.sources : [];
+  const latestState = await getState();
+  const hasRunningFlow = autoRunActive || getRunningSteps(latestState.stepStatuses).length > 0;
+
+  if (removedSources.includes('signup-page') && hasRunningFlow) {
+    await requestStop({
+      logMessage: '检测到关键流程标签被关闭，正在停止当前流程并清理浏览器代理...',
+    });
+    return {
+      ...result,
+      released: true,
+      stopped: true,
+    };
+  }
+
+  const releaseResult = await releaseBrowserProxyIfUnused();
+  if (releaseResult?.cleared) {
+    await addLog('代理相关标签已全部关闭，浏览器代理已自动还原。', 'info');
+  }
+
+  return {
+    ...result,
+    released: Boolean(releaseResult?.cleared),
+  };
+}
+
 function getErrorMessage(error) {
   if (typeof loggingStatus !== 'undefined' && loggingStatus?.getErrorMessage) {
     return loggingStatus.getErrorMessage(error);
@@ -5100,6 +5190,9 @@ async function handleStepData(step, payload) {
       if (shouldUseCustomRegistrationEmail(latestState) && latestState.email) {
         await setEmailStateSilently(null);
       }
+      if (typeof releaseBrowserProxyIfUnused === 'function') {
+        await releaseBrowserProxyIfUnused({ force: true });
+      }
       break;
     }
   }
@@ -5341,6 +5434,9 @@ async function requestStop(options = {}) {
         ? false
         : (options.logMessage || '已取消自动运行倒计时计划。'),
     });
+    if (typeof releaseBrowserProxyIfUnused === 'function') {
+      await releaseBrowserProxyIfUnused({ force: true });
+    }
     return;
   }
 
@@ -5366,6 +5462,9 @@ async function requestStop(options = {}) {
     });
     await clearAutoRunTimerAlarm();
     clearStopRequest();
+    if (typeof releaseBrowserProxyIfUnused === 'function') {
+      await releaseBrowserProxyIfUnused({ force: true });
+    }
     return;
   }
 
@@ -5406,6 +5505,9 @@ async function requestStop(options = {}) {
     autoRunTimerPlan: null,
     scheduledAutoRunPlan: null,
   });
+  if (typeof releaseBrowserProxyIfUnused === 'function') {
+    await releaseBrowserProxyIfUnused({ force: true });
+  }
 }
 
 // ============================================================
@@ -5695,6 +5797,7 @@ const autoRunController = self.MultiPageBackgroundAutoRunController?.createAutoR
   launchAutoRunTimerPlan,
   normalizeAutoRunFallbackThreadIntervalMinutes,
   persistAutoRunTimerPlan,
+  releaseBrowserProxyIfUnused,
   resetState,
   runAutoSequenceFromStep: (...args) => runAutoSequenceFromStep(...args),
   runtime: {
@@ -5946,6 +6049,9 @@ async function runAutoSequenceFromStep(startStep, context = {}) {
   let continueCurrentAttempt = continued;
 
   while (true) {
+  if (typeof ensureConfiguredBrowserProxyActive === 'function') {
+    await ensureConfiguredBrowserProxyActive();
+  }
 
   if (continueCurrentAttempt) {
     await addLog(`=== 目标 ${targetRun}/${totalRuns} 轮：继续当前进度，从步骤 ${startStep} 开始（第 ${attemptRuns} 次尝试）===`, 'info');
@@ -6432,6 +6538,7 @@ const messageRouter = self.MultiPageBackgroundMessageRouter?.createMessageRouter
   patchHotmailAccount,
   registerTab,
   requestStop,
+  releaseBrowserProxyIfUnused,
   resetState,
   resumeAutoRun,
   scheduleAutoRun,
@@ -6452,9 +6559,11 @@ const messageRouter = self.MultiPageBackgroundMessageRouter?.createMessageRouter
   skipStep,
   startContributionFlow: (...args) => contributionOAuthManager?.startContributionFlow?.(...args),
   startAutoRunLoop,
+  invalidateBrowserProxyAffectedTabs: () => tabRuntime?.invalidateTrackedSources?.(BROWSER_PROXY_AFFECTED_SOURCES),
   pollContributionStatus: (...args) => contributionOAuthManager?.pollContributionStatus?.(...args),
   syncHotmailAccounts,
   syncConfiguredBrowserProxy: (...args) => browserProxyController?.syncConfiguredProxy?.(...args),
+  testConfiguredBrowserProxy: (...args) => browserProxyController?.testProxyConnection?.(...args),
   testHotmailAccountMailAccess,
   upsertHotmailAccount,
   verifyHotmailAccount,
@@ -7548,6 +7657,16 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   launchAutoRunTimerPlan('alarm').catch((err) => {
     console.error(LOG_PREFIX, 'Failed to resume auto run from timer alarm:', err);
   });
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  handleTrackedTabRemoved(tabId).catch((err) => {
+    console.error(LOG_PREFIX, 'Failed to handle tracked tab removal:', err);
+  });
+});
+
+chrome.runtime.onSuspend?.addListener(() => {
+  browserProxyController?.clearProxySettingsBestEffort?.();
 });
 
 chrome.runtime.onStartup.addListener(() => {

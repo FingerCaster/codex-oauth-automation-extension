@@ -4,6 +4,7 @@
   function createBrowserProxyController(deps = {}) {
     const {
       chrome,
+      fetch: fetchFn = (typeof fetch === 'function' ? fetch.bind(globalThis) : null),
       getState,
       LOG_PREFIX = '[MultiPage:bg]',
       buildAutomationProxyBypassList,
@@ -16,6 +17,24 @@
     let activeProxyKey = '';
     let lastProxyError = null;
     const authAttemptsByRequestId = new Map();
+    const PROXY_IP_TEST_ENDPOINTS = [
+      {
+        label: 'ipify',
+        url: 'https://api.ipify.org?format=json',
+        readIp: async (response) => {
+          const payload = await response.json();
+          return String(payload?.ip || '').trim();
+        },
+      },
+      {
+        label: 'ipinfo',
+        url: 'https://ipinfo.io/json',
+        readIp: async (response) => {
+          const payload = await response.json();
+          return String(payload?.ip || '').trim();
+        },
+      },
+    ];
 
     function isProxySettingsAvailable() {
       return Boolean(chrome?.proxy?.settings?.set && chrome?.proxy?.settings?.clear);
@@ -51,6 +70,19 @@
       return parsedProxy?.url || '';
     }
 
+    function buildProxySummary(parsedProxy) {
+      if (!parsedProxy) {
+        return null;
+      }
+
+      return {
+        scheme: parsedProxy.scheme,
+        host: parsedProxy.host,
+        port: parsedProxy.port,
+        hasAuth: Boolean(parsedProxy.hasAuth),
+      };
+    }
+
     function buildProxySettingsValue(parsedProxy) {
       return {
         mode: 'fixed_servers',
@@ -65,11 +97,36 @@
       };
     }
 
-    async function clearProxySettings() {
+    function resetActiveProxyState() {
       activeProxy = null;
       activeProxyKey = '';
       lastProxyError = null;
       authAttemptsByRequestId.clear();
+    }
+
+    function clearProxySettingsBestEffort() {
+      resetActiveProxyState();
+
+      if (!isProxySettingsAvailable()) {
+        return false;
+      }
+
+      try {
+        const clearResult = chrome.proxy.settings.clear({ scope: 'regular' });
+        if (clearResult && typeof clearResult.catch === 'function') {
+          clearResult.catch((error) => {
+            console.warn(LOG_PREFIX, 'Failed to clear browser proxy settings:', error?.message || error);
+          });
+        }
+        return true;
+      } catch (error) {
+        console.warn(LOG_PREFIX, 'Failed to clear browser proxy settings:', error?.message || error);
+        return false;
+      }
+    }
+
+    async function clearProxySettings() {
+      resetActiveProxyState();
 
       if (!isProxySettingsAvailable()) {
         return { enabled: false };
@@ -108,6 +165,84 @@
       lastProxyError = null;
       authAttemptsByRequestId.clear();
       return { enabled: true, proxy: parsedProxy };
+    }
+
+    async function fetchWithTimeout(url, options = {}) {
+      if (typeof fetchFn !== 'function') {
+        throw new Error('当前环境不支持代理测试。');
+      }
+
+      const { timeoutMs: rawTimeoutMs, ...fetchOptions } = options || {};
+      const timeoutMs = Math.max(1000, Number(rawTimeoutMs) || 8000);
+      const controller = typeof AbortController === 'function' ? new AbortController() : null;
+      const timer = controller
+        ? setTimeout(() => controller.abort(), timeoutMs)
+        : null;
+
+      try {
+        return await fetchFn(url, {
+          cache: 'no-store',
+          redirect: 'follow',
+          ...fetchOptions,
+          ...(controller ? { signal: controller.signal } : {}),
+        });
+      } finally {
+        if (timer) {
+          clearTimeout(timer);
+        }
+      }
+    }
+
+    async function testProxyConnection(state = null, options = {}) {
+      const sourceState = state || (typeof getState === 'function' ? await getState() : {});
+      const parsedProxy = getParsedProxy(sourceState) || activeProxy;
+      const proxy = buildProxySummary(parsedProxy);
+      const attempts = [];
+      const timeoutMs = Math.max(1000, Number(options.timeoutMs) || 8000);
+
+      for (const endpoint of PROXY_IP_TEST_ENDPOINTS) {
+        const testUrl = `${endpoint.url}${endpoint.url.includes('?') ? '&' : '?'}_=${Date.now()}`;
+        try {
+          const response = await fetchWithTimeout(testUrl, {
+            headers: {
+              Accept: 'application/json,text/plain;q=0.9,*/*;q=0.8',
+            },
+            timeoutMs,
+          });
+
+          if (!response?.ok) {
+            throw new Error(`HTTP ${response?.status || 'unknown'}`);
+          }
+
+          const ip = String(await endpoint.readIp(response)).trim();
+          if (!ip) {
+            throw new Error('返回结果中未包含出口 IP。');
+          }
+
+          return {
+            ok: true,
+            endpoint: endpoint.label,
+            ip,
+            lastProxyError,
+            proxy,
+            testedAt: Date.now(),
+          };
+        } catch (error) {
+          attempts.push({
+            endpoint: endpoint.label,
+            error: error?.message || String(error || '代理测试失败'),
+          });
+        }
+      }
+
+      return {
+        ok: false,
+        attempts,
+        errorMessage: attempts[attempts.length - 1]?.error || '代理测试失败。',
+        lastProxyError,
+        proxy,
+        testedAt: Date.now(),
+      };
     }
 
     function shouldHandleProxyAuth(details, parsedProxy) {
@@ -203,11 +338,14 @@
 
     return {
       buildProxySettingsValue,
+      buildProxySummary,
       clearProxySettings,
+      clearProxySettingsBestEffort,
       getActiveProxy: () => activeProxy,
       getLastProxyError: () => lastProxyError,
       shouldHandleProxyAuth,
       syncConfiguredProxy,
+      testProxyConnection,
     };
   }
 

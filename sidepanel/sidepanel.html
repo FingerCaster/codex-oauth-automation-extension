@@ -155,12 +155,21 @@
       </div>
       <div class="data-row" id="row-browser-proxy-url">
         <span class="data-label">浏览器代理</span>
-        <div class="input-with-icon">
-          <input type="password" id="input-browser-proxy-url" class="data-input data-input-with-icon"
-            placeholder="留空则直连；格式 http(s)://username:password@hostname:port" />
-          <button id="btn-toggle-browser-proxy" class="input-icon-btn" type="button" aria-label="显示浏览器代理"
-            title="显示浏览器代理"></button>
+        <div class="data-inline">
+          <div class="input-with-icon">
+            <input type="password" id="input-browser-proxy-url" class="data-input data-input-with-icon"
+              placeholder="留空则直连；格式 http(s)://username:password@hostname:port" />
+            <button id="btn-toggle-browser-proxy" class="input-icon-btn" type="button" aria-label="显示浏览器代理"
+              title="显示浏览器代理"></button>
+          </div>
+          <button id="btn-test-browser-proxy" class="btn btn-outline btn-sm data-inline-btn" type="button">测试</button>
+          <button id="btn-clear-browser-proxy-runtime" class="btn btn-outline btn-sm data-inline-btn" type="button"
+            title="手动清理当前浏览器代理，不删除已保存配置">清理</button>
         </div>
+      </div>
+      <div class="data-row" id="row-browser-proxy-status">
+        <span class="data-label">代理测试</span>
+        <span id="browser-proxy-test-status" class="data-value mono truncate">未测试</span>
       </div>
       <div class="data-row" id="row-local-cpa-skipped-steps">
         <span class="data-label">本地 CPA 跳步</span>
