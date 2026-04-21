@@ -217,3 +217,92 @@ test('signup flow helper finalizes step 3 submit by reusing signup verification 
     },
   });
 });
+
+test('signup flow helper enables slow navigation mode for step 3 finalize when requested', async () => {
+  const sends = [];
+
+  const helpers = signupFlowApi.createSignupFlowHelpers({
+    buildGeneratedAliasEmail: () => '',
+    chrome: { tabs: { get: async () => ({ id: 31, url: 'https://auth.openai.com/create-account/password' }) } },
+    ensureContentScriptReadyOnTab: async () => {},
+    ensureHotmailAccountForFlow: async () => ({}),
+    ensureLuckmailPurchaseForFlow: async () => ({}),
+    isGeneratedAliasProvider: () => false,
+    isReusableGeneratedAliasEmail: () => false,
+    isHotmailProvider: () => false,
+    isLuckmailProvider: () => false,
+    isSignupEmailVerificationPageUrl: () => false,
+    isSignupPasswordPageUrl: () => true,
+    reuseOrCreateTab: async () => 31,
+    sendToContentScriptResilient: async (_source, message, options) => {
+      sends.push({ message, options });
+      return { ready: true };
+    },
+    setEmailState: async () => {},
+    SIGNUP_ENTRY_URL: 'https://chatgpt.com/',
+    SIGNUP_PAGE_INJECT_FILES: ['content/utils.js', 'content/signup-page.js'],
+    waitForTabUrlMatch: async () => null,
+  });
+
+  await helpers.finalizeSignupPasswordSubmitInTab(31, 'Secret123!', 3, { slowNavigationMode: true });
+
+  assert.deepStrictEqual(sends[0]?.message, {
+    type: 'PREPARE_SIGNUP_VERIFICATION',
+    step: 3,
+    source: 'background',
+    payload: {
+      password: 'Secret123!',
+      prepareSource: 'step3_finalize',
+      prepareLogLabel: '步骤 3 收尾',
+      slowNavigationMode: true,
+    },
+  });
+  assert.equal(sends[0]?.options?.timeoutMs, 45000);
+});
+
+test('signup flow helper finalizes step 5 submit via signup profile completion preparation', async () => {
+  let ensureCalls = 0;
+  const messages = [];
+
+  const helpers = signupFlowApi.createSignupFlowHelpers({
+    buildGeneratedAliasEmail: () => '',
+    chrome: { tabs: { get: async () => ({ id: 32, url: 'https://auth.openai.com/u/signup/profile' }) } },
+    ensureContentScriptReadyOnTab: async (...args) => {
+      ensureCalls += 1;
+      messages.push({ type: 'ensure', args });
+    },
+    ensureHotmailAccountForFlow: async () => ({}),
+    ensureLuckmailPurchaseForFlow: async () => ({}),
+    isGeneratedAliasProvider: () => false,
+    isReusableGeneratedAliasEmail: () => false,
+    isHotmailProvider: () => false,
+    isLuckmailProvider: () => false,
+    isSignupEmailVerificationPageUrl: () => false,
+    isSignupPasswordPageUrl: () => false,
+    reuseOrCreateTab: async () => 32,
+    sendToContentScriptResilient: async (_source, message, options) => {
+      messages.push({ type: 'send', message, options });
+      return { ready: true, waitRounds: 1 };
+    },
+    setEmailState: async () => {},
+    SIGNUP_ENTRY_URL: 'https://chatgpt.com/',
+    SIGNUP_PAGE_INJECT_FILES: ['content/utils.js', 'content/signup-page.js'],
+    waitForTabUrlMatch: async () => null,
+  });
+
+  const result = await helpers.finalizeSignupProfileSubmitInTab(32, 5, { slowNavigationMode: true });
+
+  assert.deepStrictEqual(result, { ready: true, waitRounds: 1 });
+  assert.equal(ensureCalls, 1);
+  assert.deepStrictEqual(messages.find((item) => item.type === 'send')?.message, {
+    type: 'PREPARE_SIGNUP_PROFILE_COMPLETION',
+    step: 5,
+    source: 'background',
+    payload: {
+      prepareSource: 'step5_finalize',
+      prepareLogLabel: '步骤 5 收尾',
+      slowNavigationMode: true,
+    },
+  });
+  assert.equal(messages.find((item) => item.type === 'send')?.options?.timeoutMs, 45000);
+});

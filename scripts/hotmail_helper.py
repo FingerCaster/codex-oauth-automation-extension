@@ -12,7 +12,7 @@ from email.header import decode_header
 from email.utils import getaddresses, parseaddr, parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 
@@ -100,6 +100,10 @@ def get_json(url, headers=None):
     request = Request(url, headers=headers or {})
     with urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
         return response.getcode(), json.loads(response.read().decode("utf-8"))
+
+
+def encode_query(params):
+    return urlencode(params, quote_via=quote, safe=",$")
 
 
 def mask_secret(value, keep=6):
@@ -566,12 +570,12 @@ def normalize_outlook_message(message, mailbox):
 
 def fetch_graph_messages(access_token, mailbox="INBOX", top=FETCH_LIMIT_DEFAULT):
     mailbox_id = normalize_mailbox_id(mailbox)
-    url = (
-        f"{GRAPH_API_ORIGIN}/v1.0/me/mailFolders/{mailbox_id}/messages"
-        f"?$top={max(1, min(int(top or FETCH_LIMIT_DEFAULT), 30))}"
-        f"&$select=id,internetMessageId,subject,from,toRecipients,bodyPreview,receivedDateTime"
-        f"&$orderby=receivedDateTime desc"
-    )
+    query = encode_query({
+        "$top": max(1, min(int(top or FETCH_LIMIT_DEFAULT), 30)),
+        "$select": "id,internetMessageId,subject,from,toRecipients,bodyPreview,receivedDateTime",
+        "$orderby": "receivedDateTime desc",
+    })
+    url = f"{GRAPH_API_ORIGIN}/v1.0/me/mailFolders/{mailbox_id}/messages?{query}"
     try:
         _, payload = get_json(url, headers={
             "Accept": "application/json",
@@ -589,12 +593,12 @@ def fetch_graph_messages(access_token, mailbox="INBOX", top=FETCH_LIMIT_DEFAULT)
 
 def fetch_outlook_api_messages(access_token, mailbox="INBOX", top=FETCH_LIMIT_DEFAULT):
     mailbox_id = normalize_mailbox_id(mailbox)
-    url = (
-        f"{OUTLOOK_API_ORIGIN}/api/v2.0/me/mailfolders/{mailbox_id}/messages"
-        f"?$top={max(1, min(int(top or FETCH_LIMIT_DEFAULT), 30))}"
-        f"&$select=Id,Subject,From,ToRecipients,BodyPreview,ReceivedDateTime"
-        f"&$orderby=ReceivedDateTime desc"
-    )
+    query = encode_query({
+        "$top": max(1, min(int(top or FETCH_LIMIT_DEFAULT), 30)),
+        "$select": "Id,Subject,From,ToRecipients,BodyPreview,ReceivedDateTime",
+        "$orderby": "ReceivedDateTime desc",
+    })
+    url = f"{OUTLOOK_API_ORIGIN}/api/v2.0/me/mailfolders/{mailbox_id}/messages?{query}"
     try:
         _, payload = get_json(url, headers={
             "Accept": "application/json",

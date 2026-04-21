@@ -16,6 +16,8 @@
 
     let actionInFlight = false;
     let listExpanded = false;
+    let batchVerifyRunning = false;
+    let batchVerifyStopping = false;
 
     function getHotmailAccountsByUsage(mode = 'all', currentState = state.getLatestState()) {
       const accounts = helpers.getHotmailAccounts(currentState);
@@ -47,12 +49,55 @@
       return `${expanded ? '收起列表' : '展开列表'}${suffix}`;
     }
 
-    function updateHotmailListViewport() {
-      const count = helpers.getHotmailAccounts().length;
-      const usedCount = getHotmailAccountsByUsage('used').length;
+    function getHotmailServiceMode(currentState = state.getLatestState()) {
+      if (typeof hotmailUtils.normalizeHotmailServiceMode === 'function') {
+        return hotmailUtils.normalizeHotmailServiceMode(currentState?.hotmailServiceMode);
+      }
+      return String(currentState?.hotmailServiceMode || '').trim().toLowerCase() === 'remote'
+        ? 'remote'
+        : 'local';
+    }
+
+    function isLocalHelperMode(currentState = state.getLatestState()) {
+      return getHotmailServiceMode(currentState) === 'local';
+    }
+
+    function getPendingHotmailAccountsForBatchVerify(currentState = state.getLatestState()) {
+      const accounts = helpers.getHotmailAccounts(currentState);
+      return accounts.filter((account) => {
+        const normalizedStatus = String(account?.status || 'pending').trim().toLowerCase();
+        return Boolean(account)
+          && ['pending', 'error'].includes(normalizedStatus)
+          && !account.used
+          && Boolean(account.refreshToken);
+      });
+    }
+
+    function getHotmailBatchVerifyText(count) {
+      if (batchVerifyRunning) {
+        return batchVerifyStopping ? '停止中...' : '停止';
+      }
+      const normalizedCount = Number.isFinite(Number(count)) ? Math.max(0, Number(count)) : 0;
+      const suffix = normalizedCount > 0 ? `（${normalizedCount}）` : '';
+      return `批量校验${suffix}`;
+    }
+
+    function updateHotmailListViewport(currentState = state.getLatestState()) {
+      const count = helpers.getHotmailAccounts(currentState).length;
+      const usedCount = getHotmailAccountsByUsage('used', currentState).length;
+      const pendingVerifyCount = getPendingHotmailAccountsForBatchVerify(currentState).length;
+      const localHelperMode = isLocalHelperMode(currentState);
       if (dom.btnClearUsedHotmailAccounts) {
         dom.btnClearUsedHotmailAccounts.textContent = getHotmailBulkActionText('used', usedCount);
         dom.btnClearUsedHotmailAccounts.disabled = usedCount === 0;
+      }
+      if (dom.btnBatchVerifyHotmailAccounts) {
+        dom.btnBatchVerifyHotmailAccounts.hidden = !localHelperMode;
+        dom.btnBatchVerifyHotmailAccounts.textContent = getHotmailBatchVerifyText(pendingVerifyCount);
+        dom.btnBatchVerifyHotmailAccounts.disabled = !localHelperMode
+          || (batchVerifyRunning
+            ? batchVerifyStopping
+            : (pendingVerifyCount === 0 || actionInFlight));
       }
       if (dom.btnDeleteAllHotmailAccounts) {
         dom.btnDeleteAllHotmailAccounts.textContent = getHotmailBulkActionText('all', count);
@@ -200,12 +245,12 @@
     function renderHotmailAccounts() {
       if (!dom.hotmailAccountsList) return;
       const latestState = state.getLatestState();
-      const accounts = helpers.getHotmailAccounts();
+      const accounts = helpers.getHotmailAccounts(latestState);
       const currentId = latestState?.currentHotmailAccountId || '';
 
       if (!accounts.length) {
         dom.hotmailAccountsList.innerHTML = '<div class="hotmail-empty">还没有 Hotmail 账号，先添加一条再校验。</div>';
-        updateHotmailListViewport();
+        updateHotmailListViewport(latestState);
         return;
       }
 
@@ -242,7 +287,7 @@
           </div>
         </div>
       `).join('');
-      updateHotmailListViewport();
+      updateHotmailListViewport(latestState);
     }
 
     async function deleteHotmailAccountsByMode(mode) {
@@ -388,6 +433,95 @@
       } finally {
         actionInFlight = false;
         dom.btnImportHotmailAccounts.disabled = false;
+      }
+    }
+
+    async function handleBatchVerifyHotmailAccounts() {
+      if (batchVerifyRunning) {
+        if (batchVerifyStopping) {
+          return;
+        }
+
+        try {
+          batchVerifyStopping = true;
+          updateHotmailListViewport();
+          const response = await runtime.sendMessage({
+            type: 'STOP_HOTMAIL_BATCH_VERIFY',
+            source: 'sidepanel',
+            payload: {},
+          });
+          if (response?.error) {
+            throw new Error(response.error);
+          }
+          if (response?.stopping) {
+            helpers.showToast('正在停止 Hotmail 批量校验...', 'warn', 1800);
+            return;
+          }
+          batchVerifyStopping = false;
+          updateHotmailListViewport();
+        } catch (err) {
+          batchVerifyStopping = false;
+          updateHotmailListViewport();
+          helpers.showToast(`停止批量校验失败：${err.message}`, 'error');
+        }
+        return;
+      }
+
+      if (actionInFlight) return;
+
+      const latestState = state.getLatestState();
+      if (!isLocalHelperMode(latestState)) {
+        helpers.showToast('批量校验仅支持 Hotmail 本地助手模式。', 'warn');
+        return;
+      }
+
+      const targetAccounts = getPendingHotmailAccountsForBatchVerify(latestState);
+      if (!targetAccounts.length) {
+        helpers.showToast('当前没有待校验或异常的 Hotmail 账号。', 'warn');
+        return;
+      }
+
+      batchVerifyRunning = true;
+      batchVerifyStopping = false;
+      actionInFlight = true;
+      updateHotmailListViewport(latestState);
+
+      try {
+        const response = await runtime.sendMessage({
+          type: 'BATCH_VERIFY_HOTMAIL_ACCOUNTS',
+          source: 'sidepanel',
+          payload: {},
+        });
+        if (response?.error) {
+          throw new Error(response.error);
+        }
+
+        const verifiedCount = Number(response?.verifiedCount || 0);
+        const failedCount = Number(response?.failedCount || 0);
+        const skippedCount = Number(response?.skippedCount || 0);
+        if (response?.stopped) {
+          helpers.showToast(
+            `批量校验已停止：成功 ${verifiedCount} 个，失败 ${failedCount} 个，未处理 ${skippedCount} 个。`,
+            'warn',
+            3200
+          );
+          return;
+        }
+        const toastLevel = failedCount > 0
+          ? (verifiedCount > 0 ? 'warn' : 'error')
+          : 'success';
+        helpers.showToast(
+          `批量校验完成：成功 ${verifiedCount} 个，失败 ${failedCount} 个，跳过 ${skippedCount} 个。`,
+          toastLevel,
+          3200
+        );
+      } catch (err) {
+        helpers.showToast(`批量校验失败：${err.message}`, 'error');
+      } finally {
+        batchVerifyRunning = false;
+        batchVerifyStopping = false;
+        actionInFlight = false;
+        updateHotmailListViewport();
       }
     }
 
@@ -539,6 +673,7 @@
         }
       });
 
+      dom.btnBatchVerifyHotmailAccounts?.addEventListener('click', handleBatchVerifyHotmailAccounts);
       dom.btnAddHotmailAccount?.addEventListener('click', handleAddHotmailAccount);
       dom.btnImportHotmailAccounts?.addEventListener('click', handleImportHotmailAccounts);
       dom.hotmailAccountsList?.addEventListener('click', handleAccountListClick);

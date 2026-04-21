@@ -19,6 +19,7 @@ if (document.documentElement.getAttribute(SIGNUP_PAGE_LISTENER_SENTINEL) !== '1'
       || message.type === 'STEP8_TRIGGER_CONTINUE'
       || message.type === 'GET_LOGIN_AUTH_STATE'
       || message.type === 'PREPARE_SIGNUP_VERIFICATION'
+      || message.type === 'PREPARE_SIGNUP_PROFILE_COMPLETION'
       || message.type === 'RECOVER_AUTH_RETRY_PAGE'
       || message.type === 'RESEND_VERIFICATION_CODE'
       || message.type === 'ENSURE_SIGNUP_ENTRY_READY'
@@ -72,6 +73,8 @@ async function handleCommand(message) {
       return serializeLoginAuthState(inspectLoginAuthState());
     case 'PREPARE_SIGNUP_VERIFICATION':
       return await prepareSignupVerificationFlow(message.payload);
+    case 'PREPARE_SIGNUP_PROFILE_COMPLETION':
+      return await prepareSignupProfileCompletion(message.payload);
     case 'RECOVER_AUTH_RETRY_PAGE':
       return await recoverCurrentAuthRetryPage(message.payload);
     case 'RESEND_VERIFICATION_CODE':
@@ -1634,19 +1637,23 @@ async function waitForSignupVerificationTransition(timeout = 5000) {
 
 async function prepareSignupVerificationFlow(payload = {}, timeout = 30000) {
   const { password } = payload;
+  const slowNavigationMode = Boolean(payload?.slowNavigationMode);
   const prepareSource = String(payload?.prepareSource || '').trim() || 'step4_execute';
   const prepareLogLabel = String(payload?.prepareLogLabel || '').trim()
     || (prepareSource === 'step3_finalize' ? '步骤 3 收尾' : '步骤 4 执行');
+  const transitionWaitMs = slowNavigationMode ? 10000 : 5000;
+  const postClickSettleMs = slowNavigationMode ? 2200 : 1200;
+  const resolvedTimeout = Math.max(timeout, slowNavigationMode ? 45000 : 30000);
   const start = Date.now();
   let recoveryRound = 0;
-  const maxRecoveryRounds = 3;
+  const maxRecoveryRounds = slowNavigationMode ? 4 : 3;
 
-  while (Date.now() - start < timeout && recoveryRound < maxRecoveryRounds) {
+  while (Date.now() - start < resolvedTimeout && recoveryRound < maxRecoveryRounds) {
     throwIfStopped();
 
     const roundNo = recoveryRound + 1;
-    log(`${prepareLogLabel}：等待页面进入验证码阶段（第 ${roundNo}/${maxRecoveryRounds} 轮，先等待 5 秒）...`, 'info');
-    const snapshot = await waitForSignupVerificationTransition(5000);
+    log(`${prepareLogLabel}：等待页面进入验证码阶段（第 ${roundNo}/${maxRecoveryRounds} 轮，先等待 ${Math.ceil(transitionWaitMs / 1000)} 秒）...`, 'info');
+    const snapshot = await waitForSignupVerificationTransition(transitionWaitMs);
 
     if (snapshot.state === 'step5') {
       log(`${prepareLogLabel}：页面已进入验证码后的下一阶段，本步骤按已完成处理。`, 'ok');
@@ -1692,7 +1699,7 @@ async function prepareSignupVerificationFlow(payload = {}, timeout = 30000) {
         log(`${prepareLogLabel}：页面仍停留在密码页，正在重新点击“继续”（第 ${recoveryRound}/${maxRecoveryRounds} 次）...`, 'warn');
         await humanPause(350, 900);
         simulateClick(snapshot.submitButton);
-        await sleep(1200);
+        await sleep(postClickSettleMs);
         continue;
       }
 
@@ -1704,6 +1711,104 @@ async function prepareSignupVerificationFlow(payload = {}, timeout = 30000) {
   }
 
   throw new Error(`等待注册验证码页面就绪超时或自动恢复失败（已尝试 ${recoveryRound}/${maxRecoveryRounds} 轮）。URL: ${location.href}`);
+}
+
+function inspectStep5CompletionState() {
+  const errorText = getStep5ErrorText();
+  if (errorText) {
+    return {
+      state: 'error',
+      errorText,
+      url: location.href,
+    };
+  }
+
+  if (isStep5Ready()) {
+    return {
+      state: 'profile',
+      url: location.href,
+    };
+  }
+
+  return {
+    state: 'completed',
+    url: location.href,
+    consentReady: isStep8Ready(),
+    addPhonePage: isAddPhonePageReady(),
+  };
+}
+
+async function waitForStep5CompletionState(timeout = 4000) {
+  const start = Date.now();
+
+  while (Date.now() - start < timeout) {
+    throwIfStopped();
+    const snapshot = inspectStep5CompletionState();
+    if (snapshot.state === 'completed' || snapshot.state === 'error') {
+      return snapshot;
+    }
+    await sleep(200);
+  }
+
+  return inspectStep5CompletionState();
+}
+
+async function prepareSignupProfileCompletion(payload = {}, timeout = 20000) {
+  const slowNavigationMode = Boolean(payload?.slowNavigationMode);
+  const prepareSource = String(payload?.prepareSource || '').trim() || 'step5_finalize';
+  const prepareLogLabel = String(payload?.prepareLogLabel || '').trim() || '步骤 5 收尾';
+  const transitionWaitMs = slowNavigationMode ? 10000 : 4000;
+  const resolvedTimeout = Math.max(timeout, slowNavigationMode ? 45000 : 20000);
+  const start = Date.now();
+  let roundNo = 0;
+
+  while (Date.now() - start < resolvedTimeout) {
+    throwIfStopped();
+    roundNo += 1;
+
+    log(`${prepareLogLabel}：等待资料页提交结果（第 ${roundNo} 轮，先等待 ${Math.ceil(transitionWaitMs / 1000)} 秒）...`, 'info');
+    const snapshot = await waitForStep5CompletionState(transitionWaitMs);
+
+    if (snapshot.state === 'completed') {
+      const result = {
+        ready: true,
+        prepareSource,
+        waitRounds: Math.max(0, roundNo - 1),
+        url: snapshot.url || location.href,
+      };
+      if (slowNavigationMode) {
+        result.slowNavigationMode = true;
+      }
+      log(`${prepareLogLabel}：资料页已提交完成${roundNo > 1 ? `（额外等待 ${roundNo - 1} 轮）` : ''}。`, 'ok');
+      return result;
+    }
+
+    if (snapshot.state === 'error') {
+      throw new Error(snapshot.errorText || '资料页提交失败。');
+    }
+
+    log(`${prepareLogLabel}：页面仍停留在资料页，继续等待提交结果...`, 'warn');
+  }
+
+  const finalSnapshot = inspectStep5CompletionState();
+  if (finalSnapshot.state === 'completed') {
+    const result = {
+      ready: true,
+      prepareSource,
+      waitRounds: roundNo,
+      url: finalSnapshot.url || location.href,
+    };
+    if (slowNavigationMode) {
+      result.slowNavigationMode = true;
+    }
+    return result;
+  }
+
+  if (finalSnapshot.state === 'error') {
+    throw new Error(finalSnapshot.errorText || '资料页提交失败。');
+  }
+
+  throw new Error(`等待资料页提交完成超时。URL: ${location.href}`);
 }
 
 

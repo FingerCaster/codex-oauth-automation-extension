@@ -151,15 +151,27 @@
       return result;
     }
 
-    async function finalizeSignupPasswordSubmitInTab(tabId, password = '', step = 3) {
+    async function finalizeSignupPasswordSubmitInTab(tabId, password = '', step = 3, options = {}) {
       if (!Number.isInteger(tabId)) {
         throw new Error(`认证页面标签页已关闭，无法完成步骤 ${step} 的提交后确认。`);
+      }
+
+      const slowNavigationMode = Boolean(options?.slowNavigationMode);
+      const readyTimeoutMs = slowNavigationMode ? 60000 : 45000;
+      const finalizeTimeoutMs = slowNavigationMode ? 45000 : 30000;
+      const payload = {
+        password: password || '',
+        prepareSource: 'step3_finalize',
+        prepareLogLabel: '步骤 3 收尾',
+      };
+      if (slowNavigationMode) {
+        payload.slowNavigationMode = true;
       }
 
       await ensureContentScriptReadyOnTab('signup-page', tabId, {
         inject: SIGNUP_PAGE_INJECT_FILES,
         injectSource: 'signup-page',
-        timeoutMs: 45000,
+        timeoutMs: readyTimeoutMs,
         retryDelayMs: 900,
         logMessage: `步骤 ${step}：认证页仍在切换，正在等待页面恢复后继续确认提交流程...`,
       });
@@ -168,15 +180,53 @@
         type: 'PREPARE_SIGNUP_VERIFICATION',
         step,
         source: 'background',
-        payload: {
-          password: password || '',
-          prepareSource: 'step3_finalize',
-          prepareLogLabel: '步骤 3 收尾',
-        },
+        payload,
       }, {
-        timeoutMs: 30000,
+        timeoutMs: finalizeTimeoutMs,
         retryDelayMs: 700,
         logMessage: `步骤 ${step}：密码已提交，正在确认是否进入下一页面，必要时自动恢复重试页...`,
+      });
+
+      if (result?.error) {
+        throw new Error(result.error);
+      }
+
+      return result || {};
+    }
+
+    async function finalizeSignupProfileSubmitInTab(tabId, step = 5, options = {}) {
+      if (!Number.isInteger(tabId)) {
+        throw new Error(`认证页面标签页已关闭，无法完成步骤 ${step} 的提交后确认。`);
+      }
+
+      const slowNavigationMode = Boolean(options?.slowNavigationMode);
+      const readyTimeoutMs = slowNavigationMode ? 60000 : 45000;
+      const finalizeTimeoutMs = slowNavigationMode ? 45000 : 20000;
+      const payload = {
+        prepareSource: 'step5_finalize',
+        prepareLogLabel: '步骤 5 收尾',
+      };
+      if (slowNavigationMode) {
+        payload.slowNavigationMode = true;
+      }
+
+      await ensureContentScriptReadyOnTab('signup-page', tabId, {
+        inject: SIGNUP_PAGE_INJECT_FILES,
+        injectSource: 'signup-page',
+        timeoutMs: readyTimeoutMs,
+        retryDelayMs: 900,
+        logMessage: `步骤 ${step}：资料页正在提交或跳转，正在等待页面恢复后继续确认...`,
+      });
+
+      const result = await sendToContentScriptResilient('signup-page', {
+        type: 'PREPARE_SIGNUP_PROFILE_COMPLETION',
+        step,
+        source: 'background',
+        payload,
+      }, {
+        timeoutMs: finalizeTimeoutMs,
+        retryDelayMs: 700,
+        logMessage: `步骤 ${step}：资料页已提交，正在确认页面是否真正进入下一阶段...`,
       });
 
       if (result?.error) {
@@ -228,6 +278,7 @@
       ensureSignupEntryPageReady,
       ensureSignupPostEmailPageReadyInTab,
       finalizeSignupPasswordSubmitInTab,
+      finalizeSignupProfileSubmitInTab,
       ensureSignupPasswordPageReadyInTab,
       openSignupEntryTab,
       resolveSignupEmailForFlow,

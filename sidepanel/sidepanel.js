@@ -157,6 +157,7 @@ const inputHotmailImport = document.getElementById('input-hotmail-import');
 const btnAddHotmailAccount = document.getElementById('btn-add-hotmail-account');
 const btnImportHotmailAccounts = document.getElementById('btn-import-hotmail-accounts');
 const btnToggleHotmailForm = document.getElementById('btn-toggle-hotmail-form');
+const btnBatchVerifyHotmailAccounts = document.getElementById('btn-batch-verify-hotmail-accounts');
 const btnHotmailUsageGuide = document.getElementById('btn-hotmail-usage-guide');
 const btnClearUsedHotmailAccounts = document.getElementById('btn-clear-used-hotmail-accounts');
 const btnDeleteAllHotmailAccounts = document.getElementById('btn-delete-all-hotmail-accounts');
@@ -3400,6 +3401,7 @@ const hotmailManager = window.SidepanelHotmailManager?.createHotmailManager({
   },
   dom: {
     btnAddHotmailAccount,
+    btnBatchVerifyHotmailAccounts,
     btnClearUsedHotmailAccounts,
     btnDeleteAllHotmailAccounts,
     btnHotmailUsageGuide,

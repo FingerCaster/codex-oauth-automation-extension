@@ -7,13 +7,23 @@ test('hotmail helper script fetches recipients and keeps code selection inside t
 
   assert.match(
     source,
-    /\$select=id,internetMessageId,subject,from,toRecipients,bodyPreview,receivedDateTime/,
+    /def encode_query\(params\):/,
+    '本地 helper 应统一编码 Graph\/Outlook 查询参数，避免 orderby 空格导致 URL 非法'
+  );
+  assert.match(
+    source,
+    /\$select["']:\s*"id,internetMessageId,subject,from,toRecipients,bodyPreview,receivedDateTime"/,
     'Graph 拉取应包含 toRecipients，便于按目标邮箱过滤'
   );
   assert.match(
     source,
-    /\$select=Id,Subject,From,ToRecipients,BodyPreview,ReceivedDateTime/,
+    /\$select["']:\s*"Id,Subject,From,ToRecipients,BodyPreview,ReceivedDateTime"/,
     'Outlook API 拉取也应包含 ToRecipients'
+  );
+  assert.doesNotMatch(
+    source,
+    /\$orderby=receivedDateTime desc|\$orderby=ReceivedDateTime desc/,
+    'Graph\/Outlook 查询不应再把包含空格的 orderby 直接裸拼进 URL'
   );
   assert.match(
     source,

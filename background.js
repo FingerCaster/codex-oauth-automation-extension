@@ -1843,7 +1843,7 @@ async function fetchHotmailMailboxMessagesFromRemoteService(account, mailboxes =
   };
 }
 
-async function requestHotmailLocalMessages(account, mailboxes = HOTMAIL_MAILBOXES) {
+async function requestHotmailLocalMessages(account, mailboxes = HOTMAIL_MAILBOXES, options = {}) {
   if (!account?.email) {
     throw new Error('Hotmail 账号缺少邮箱地址。');
   }
@@ -1858,6 +1858,18 @@ async function requestHotmailLocalMessages(account, mailboxes = HOTMAIL_MAILBOXE
   const { timeoutMs } = getHotmailMailApiRequestConfig();
   const requestTimeoutMs = Math.max(timeoutMs, HOTMAIL_LOCAL_HELPER_TIMEOUT_MS);
   const controller = new AbortController();
+  const externalSignal = options?.signal || null;
+  const handleExternalAbort = () => {
+    controller.abort(
+      externalSignal?.reason instanceof Error
+        ? externalSignal.reason
+        : new Error(String(externalSignal?.reason || 'Hotmail 本地助手请求已停止。'))
+    );
+  };
+  if (externalSignal?.aborted) {
+    handleExternalAbort();
+  }
+  externalSignal?.addEventListener?.('abort', handleExternalAbort, { once: true });
   const timeoutId = setTimeout(() => controller.abort(new Error('timeout')), requestTimeoutMs);
 
   let response;
@@ -1878,12 +1890,18 @@ async function requestHotmailLocalMessages(account, mailboxes = HOTMAIL_MAILBOXE
       signal: controller.signal,
     });
   } catch (err) {
+    if (externalSignal?.aborted) {
+      throw externalSignal.reason instanceof Error
+        ? externalSignal.reason
+        : new Error(String(externalSignal.reason || 'Hotmail 本地助手请求已停止。'));
+    }
     if (err?.name === 'AbortError') {
       throw new Error(`Hotmail 本地助手请求超时（>${Math.round(requestTimeoutMs / 1000)} 秒）`);
     }
     throw new Error(`Hotmail 本地助手请求失败：${err.message}`);
   } finally {
     clearTimeout(timeoutId);
+    externalSignal?.removeEventListener?.('abort', handleExternalAbort);
   }
 
   const text = await response.text();
@@ -2051,22 +2069,22 @@ async function pollHotmailVerificationCodeViaLocalHelper(step, account, pollPayl
   throw lastError || new Error(`步骤 ${step}：本地助手未返回新的匹配验证码。`);
 }
 
-async function fetchHotmailMailboxMessages(account, mailboxes = HOTMAIL_MAILBOXES) {
+async function fetchHotmailMailboxMessages(account, mailboxes = HOTMAIL_MAILBOXES, options = {}) {
   const serviceSettings = getHotmailServiceSettings(await getState());
   if (serviceSettings.mode === HOTMAIL_SERVICE_MODE_LOCAL) {
-    return requestHotmailLocalMessages(account, mailboxes);
+    return requestHotmailLocalMessages(account, mailboxes, options);
   }
   return fetchHotmailMailboxMessagesFromRemoteService(account, mailboxes);
 }
 
-async function verifyHotmailAccount(accountId) {
+async function verifyHotmailAccount(accountId, options = {}) {
   const state = await getState();
   const account = findHotmailAccount(state.hotmailAccounts, accountId);
   if (!account) {
     throw new Error('未找到需要校验的 Hotmail 账号。');
   }
 
-  const result = await fetchHotmailMailboxMessages(account, ['INBOX']);
+  const result = await fetchHotmailMailboxMessages(account, ['INBOX'], options);
   return {
     account: result.account,
     messageCount: result.mailboxResults[0]?.count || 0,
@@ -6666,7 +6684,21 @@ const messageRouter = self.MultiPageBackgroundMessageRouter?.createMessageRouter
     return signupFlowHelpers.finalizeSignupPasswordSubmitInTab(
       signupTabId,
       currentState.password || currentState.customPassword || '',
-      3
+      3,
+      {
+        slowNavigationMode: Boolean(String(currentState.browserProxyUrl || '').trim()),
+      }
+    );
+  },
+  finalizeStep5Completion: async () => {
+    const currentState = await getState();
+    const signupTabId = await getTabId('signup-page');
+    return signupFlowHelpers.finalizeSignupProfileSubmitInTab(
+      signupTabId,
+      5,
+      {
+        slowNavigationMode: Boolean(String(currentState.browserProxyUrl || '').trim()),
+      }
     );
   },
   finalizeIcloudAliasAfterSuccessfulFlow,

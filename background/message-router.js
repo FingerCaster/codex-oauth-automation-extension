@@ -32,6 +32,7 @@
       exportSettingsBundle,
       fetchGeneratedEmail,
       finalizeStep3Completion,
+      finalizeStep5Completion,
       finalizeIcloudAliasAfterSuccessfulFlow,
       findHotmailAccount,
       flushCommand,
@@ -98,6 +99,10 @@
       upsertHotmailAccount,
       verifyHotmailAccount,
     } = deps;
+    const HOTMAIL_BATCH_VERIFY_STOP_MESSAGE = 'Hotmail 批量校验已停止。';
+    let hotmailBatchVerifyActive = false;
+    let hotmailBatchVerifyStopRequested = false;
+    let hotmailBatchVerifyAbortController = null;
 
     async function ensureBrowserProxyReady(stateOverride = null) {
       if (typeof syncConfiguredBrowserProxy !== 'function') {
@@ -126,6 +131,23 @@
       }
 
       return appendAccountRunRecord(status, state, reason);
+    }
+
+    function isHotmailBatchVerifyStopError(error) {
+      const message = String(error?.message || error || '');
+      return message === HOTMAIL_BATCH_VERIFY_STOP_MESSAGE;
+    }
+
+    function stopHotmailBatchVerify() {
+      if (!hotmailBatchVerifyActive) {
+        return { stopping: false };
+      }
+
+      hotmailBatchVerifyStopRequested = true;
+      if (hotmailBatchVerifyAbortController && !hotmailBatchVerifyAbortController.signal.aborted) {
+        hotmailBatchVerifyAbortController.abort(new Error(HOTMAIL_BATCH_VERIFY_STOP_MESSAGE));
+      }
+      return { stopping: true };
     }
 
     async function handleStepData(step, payload) {
@@ -266,6 +288,9 @@
           try {
             if (message.step === 3 && typeof finalizeStep3Completion === 'function') {
               await finalizeStep3Completion(message.payload || {});
+            }
+            if (message.step === 5 && typeof finalizeStep5Completion === 'function') {
+              await finalizeStep5Completion(message.payload || {});
             }
           } catch (error) {
             if (typeof isCloudflareSecurityBlockedError === 'function' && isCloudflareSecurityBlockedError(error)) {
@@ -653,6 +678,132 @@
             }
             throw err;
           }
+        }
+
+        case 'BATCH_VERIFY_HOTMAIL_ACCOUNTS': {
+          if (hotmailBatchVerifyActive) {
+            throw new Error('Hotmail 批量校验正在进行中，请先停止当前任务。');
+          }
+
+          const state = await getState();
+          const serviceMode = String(state?.hotmailServiceMode || '').trim().toLowerCase();
+          if (serviceMode !== 'local') {
+            throw new Error('批量校验仅支持 Hotmail 本地助手模式。');
+          }
+
+          const accounts = normalizeHotmailAccounts(state.hotmailAccounts);
+          const targetAccounts = accounts.filter((account) => (
+            Boolean(account)
+            && ['pending', 'error'].includes(String(account.status || 'pending').trim().toLowerCase())
+            && !account.used
+            && Boolean(account.refreshToken)
+          ));
+
+          if (!targetAccounts.length) {
+            return {
+              ok: true,
+              processedCount: 0,
+              verifiedCount: 0,
+              failedCount: 0,
+              skippedCount: accounts.length,
+              results: [],
+            };
+          }
+
+          hotmailBatchVerifyActive = true;
+          hotmailBatchVerifyStopRequested = false;
+          hotmailBatchVerifyAbortController = new AbortController();
+
+          await addLog(`Hotmail 本地助手：开始批量校验 ${targetAccounts.length} 个待处理账号。`, 'info');
+
+          try {
+            const results = [];
+            let stopped = false;
+
+            for (const account of targetAccounts) {
+              if (hotmailBatchVerifyStopRequested) {
+                stopped = true;
+                break;
+              }
+
+              try {
+                const result = await verifyHotmailAccount(account.id, {
+                  signal: hotmailBatchVerifyAbortController.signal,
+                });
+                results.push({
+                  ok: true,
+                  accountId: result.account.id,
+                  email: result.account.email,
+                  messageCount: result.messageCount,
+                });
+                await addLog(`Hotmail 账号 ${result.account.email} 批量校验通过。`, 'ok');
+              } catch (err) {
+                if (isHotmailBatchVerifyStopError(err)) {
+                  stopped = true;
+                  break;
+                }
+
+                let failedAccount = account;
+                try {
+                  if (typeof patchHotmailAccount === 'function') {
+                    failedAccount = await patchHotmailAccount(account.id, {
+                      status: 'error',
+                      lastError: err.message,
+                    });
+                  }
+                } catch (_) {
+                  failedAccount = account;
+                }
+
+                results.push({
+                  ok: false,
+                  accountId: account.id,
+                  email: failedAccount?.email || account.email || '',
+                  error: err.message,
+                });
+                await addLog(`Hotmail 账号 ${failedAccount?.email || account.email || account.id} 批量校验失败：${err.message}`, 'warn');
+              }
+            }
+
+            const verifiedCount = results.filter((item) => item.ok).length;
+            const failedCount = results.length - verifiedCount;
+            const skippedCount = Math.max(0, accounts.length - results.length);
+
+            if (stopped || hotmailBatchVerifyStopRequested) {
+              await addLog(`Hotmail 本地助手：批量校验已停止，成功 ${verifiedCount} 个，失败 ${failedCount} 个，未处理 ${skippedCount} 个。`, 'warn');
+              return {
+                ok: true,
+                stopped: true,
+                processedCount: results.length,
+                verifiedCount,
+                failedCount,
+                skippedCount,
+                results,
+              };
+            }
+
+            await addLog(`Hotmail 本地助手：批量校验完成，成功 ${verifiedCount} 个，失败 ${failedCount} 个，跳过 ${skippedCount} 个。`, failedCount > 0 ? 'warn' : 'ok');
+            return {
+              ok: true,
+              stopped: false,
+              processedCount: results.length,
+              verifiedCount,
+              failedCount,
+              skippedCount,
+              results,
+            };
+          } finally {
+            hotmailBatchVerifyActive = false;
+            hotmailBatchVerifyStopRequested = false;
+            hotmailBatchVerifyAbortController = null;
+          }
+        }
+
+        case 'STOP_HOTMAIL_BATCH_VERIFY': {
+          return {
+            ok: true,
+            ...stopHotmailBatchVerify(),
+          };
         }
 
         case 'TEST_HOTMAIL_ACCOUNT': {

@@ -75,6 +75,7 @@
             password: state.password || state.customPassword || '',
             prepareSource: 'step4_execute',
             prepareLogLabel: '步骤 4 执行',
+            slowNavigationMode: Boolean(String(state?.browserProxyUrl || '').trim()),
           },
         },
         {

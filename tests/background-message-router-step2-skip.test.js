@@ -11,7 +11,8 @@ function createRouter(overrides = {}) {
     logs: [],
     stepStatuses: [],
     emailStates: [],
-    finalizePayloads: [],
+    finalizeStep3Payloads: [],
+    finalizeStep5Payloads: [],
     notifyCompletions: [],
     notifyErrors: [],
     securityBlocks: [],
@@ -46,7 +47,10 @@ function createRouter(overrides = {}) {
     exportSettingsBundle: async () => ({}),
     fetchGeneratedEmail: async () => '',
     finalizeStep3Completion: overrides.finalizeStep3Completion || (async (payload) => {
-      events.finalizePayloads.push(payload);
+      events.finalizeStep3Payloads.push(payload);
+    }),
+    finalizeStep5Completion: overrides.finalizeStep5Completion || (async (payload) => {
+      events.finalizeStep5Payloads.push(payload);
     }),
     finalizeIcloudAliasAfterSuccessfulFlow: async () => {},
     findHotmailAccount: async () => null,
@@ -156,7 +160,7 @@ test('message router finalizes step 3 before marking it completed', async () => 
     },
   }, {});
 
-  assert.deepStrictEqual(events.finalizePayloads, [
+  assert.deepStrictEqual(events.finalizeStep3Payloads, [
     {
       email: 'user@example.com',
       signupVerificationRequestedAt: 123,
@@ -201,6 +205,62 @@ test('message router marks step 3 failed when post-submit finalize fails', async
   ]);
   assert.equal(events.logs.some(({ message }) => /步骤 3 失败：步骤 3 提交后仍停留在密码页。/.test(message)), true);
   assert.deepStrictEqual(response, { ok: true, error: '步骤 3 提交后仍停留在密码页。' });
+});
+
+test('message router finalizes step 5 before marking it completed', async () => {
+  const { router, events } = createRouter();
+
+  const response = await router.handleMessage({
+    type: 'STEP_COMPLETE',
+    step: 5,
+    source: 'signup-page',
+    payload: {
+      directProceedToStep6: true,
+    },
+  }, {});
+
+  assert.deepStrictEqual(events.finalizeStep5Payloads, [
+    {
+      directProceedToStep6: true,
+    },
+  ]);
+  assert.deepStrictEqual(events.stepStatuses, [{ step: 5, status: 'completed' }]);
+  assert.deepStrictEqual(events.notifyCompletions, [
+    {
+      step: 5,
+      payload: {
+        directProceedToStep6: true,
+      },
+    },
+  ]);
+  assert.deepStrictEqual(response, { ok: true });
+});
+
+test('message router marks step 5 failed when post-submit finalize fails', async () => {
+  const { router, events } = createRouter({
+    finalizeStep5Completion: async () => {
+      throw new Error('步骤 5 提交后长时间未离开资料页。');
+    },
+  });
+
+  const response = await router.handleMessage({
+    type: 'STEP_COMPLETE',
+    step: 5,
+    source: 'signup-page',
+    payload: {
+      directProceedToStep6: true,
+    },
+  }, {});
+
+  assert.deepStrictEqual(events.stepStatuses, [{ step: 5, status: 'failed' }]);
+  assert.deepStrictEqual(events.notifyErrors, [
+    {
+      step: 5,
+      error: '步骤 5 提交后长时间未离开资料页。',
+    },
+  ]);
+  assert.equal(events.logs.some(({ message }) => /步骤 5 失败：步骤 5 提交后长时间未离开资料页。/.test(message)), true);
+  assert.deepStrictEqual(response, { ok: true, error: '步骤 5 提交后长时间未离开资料页。' });
 });
 
 test('message router stops the flow and surfaces cloudflare security block errors', async () => {
