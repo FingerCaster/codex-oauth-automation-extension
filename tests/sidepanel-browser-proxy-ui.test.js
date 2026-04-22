@@ -13,7 +13,22 @@ function extractFunction(name) {
     throw new Error(`Function ${name} not found`);
   }
 
-  let braceIndex = sidepanelSource.indexOf('{', start);
+  let parenDepth = 0;
+  let braceIndex = -1;
+  for (let index = start; index < sidepanelSource.length; index += 1) {
+    const char = sidepanelSource[index];
+    if (char === '(') {
+      parenDepth += 1;
+    } else if (char === ')') {
+      parenDepth = Math.max(0, parenDepth - 1);
+    } else if (char === '{' && parenDepth === 0) {
+      braceIndex = index;
+      break;
+    }
+  }
+  if (braceIndex === -1) {
+    throw new Error(`Function ${name} body not found`);
+  }
   let depth = 0;
   for (let index = braceIndex; index < sidepanelSource.length; index += 1) {
     const char = sidepanelSource[index];
@@ -36,6 +51,7 @@ test('sidepanel html contains browser proxy test controls', () => {
   assert.match(html, /id="btn-test-browser-proxy"/);
   assert.match(html, /id="btn-clear-browser-proxy-runtime"/);
   assert.match(html, /id="browser-proxy-test-status"/);
+  assert.match(html, />代理状态</);
 });
 
 test('flushPendingSettingsBeforeAction waits for in-flight saves and persists dirty settings', async () => {
@@ -140,4 +156,61 @@ test('clearActiveBrowserProxyRuntime clears active proxy while preserving saved 
     level: 'success',
     duration: 3500,
   }]);
+});
+
+test('browser proxy runtime formatter prefers live exit ip and clear-state copy', () => {
+  const api = new Function(`
+    const DISPLAY_TIMEZONE = 'Asia/Shanghai';
+    const inputBrowserProxyUrl = {
+      value: 'http://user:pass@proxy.example.com:8080',
+    };
+    ${extractFunction('getPendingBrowserProxyTestStatusText')}
+    ${extractFunction('formatBrowserProxySummary')}
+    ${extractFunction('buildBrowserProxyTestToastMessage')}
+    ${extractFunction('formatBrowserProxyRuntimeTestedAt')}
+    ${extractFunction('formatBrowserProxyRuntimeStatusText')}
+    ${extractFunction('buildBrowserProxyRuntimeStatusTitle')}
+    return {
+      formatBrowserProxyRuntimeStatusText,
+      buildBrowserProxyRuntimeStatusTitle,
+    };
+  `)();
+
+  const activeRuntime = {
+    status: 'active',
+    mode: 'proxy',
+    ok: true,
+    ip: '203.0.113.10',
+    endpoint: 'ipify',
+    testedAt: Date.UTC(2026, 3, 22, 14, 30, 0),
+    proxy: {
+      scheme: 'http',
+      host: 'proxy.example.com',
+      port: 8080,
+      hasAuth: true,
+    },
+  };
+
+  assert.equal(
+    api.formatBrowserProxyRuntimeStatusText(activeRuntime),
+    '代理出口 203.0.113.10'
+  );
+  assert.match(
+    api.buildBrowserProxyRuntimeStatusTitle(activeRuntime),
+    /当前出口 IP 为 203\.0\.113\.10/
+  );
+
+  const clearedRuntime = {
+    status: 'cleared',
+    mode: 'direct',
+  };
+
+  assert.equal(
+    api.formatBrowserProxyRuntimeStatusText(clearedRuntime),
+    '当前直连'
+  );
+  assert.match(
+    api.buildBrowserProxyRuntimeStatusTitle(clearedRuntime),
+    /重新连接并刷新出口 IP/
+  );
 });

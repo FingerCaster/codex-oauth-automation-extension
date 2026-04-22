@@ -379,6 +379,7 @@ const DEFAULT_STATE = {
   loginVerificationRequestedAt: null,
   oauthFlowDeadlineAt: null,
   oauthFlowDeadlineSourceUrl: null,
+  browserProxyRuntime: null,
   currentHotmailAccountId: null,
   currentMail2925AccountId: null,
   preferredIcloudHost: '',
@@ -3777,6 +3778,11 @@ function isSignupEntryHost(hostname = '') {
   return ['chatgpt.com', 'chat.openai.com'].includes(hostname);
 }
 
+function isSignupProfileCompletionUrl(rawUrl) {
+  const parsed = parseUrlSafely(rawUrl);
+  return Boolean(parsed) && isSignupEntryHost(parsed.hostname);
+}
+
 function isSignupPasswordPageUrl(rawUrl) {
   if (typeof navigationUtils !== 'undefined' && navigationUtils?.isSignupPasswordPageUrl) {
     return navigationUtils.isSignupPasswordPageUrl(rawUrl);
@@ -4152,10 +4158,6 @@ const browserProxyController = self.MultiPageBackgroundBrowserProxy?.createBrows
   parseAutomationProxyUrl,
 });
 
-browserProxyController?.syncConfiguredProxy?.().catch((error) => {
-  console.warn(LOG_PREFIX, 'Failed to initialize browser proxy settings:', error?.message || error);
-});
-
 const tabRuntime = self.MultiPageBackgroundTabRuntime?.createTabRuntime({
   addLog,
   chrome,
@@ -4177,17 +4179,158 @@ function getTrackedBrowserProxyAffectedSources(state = null) {
   return BROWSER_PROXY_AFFECTED_SOURCES.filter((source) => Number.isInteger(registry?.[source]?.tabId));
 }
 
-async function ensureConfiguredBrowserProxyActive(stateOverride = null) {
+function getConfiguredBrowserProxySummary(state = null) {
+  const rawValue = typeof state === 'string'
+    ? state
+    : state?.browserProxyUrl;
+  const trimmed = String(rawValue || '').trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  try {
+    const normalized = typeof normalizeAutomationProxyUrl === 'function'
+      ? normalizeAutomationProxyUrl(trimmed)
+      : trimmed;
+    if (!normalized || typeof parseAutomationProxyUrl !== 'function') {
+      return null;
+    }
+
+    const parsed = parseAutomationProxyUrl(normalized);
+    if (!parsed) {
+      return null;
+    }
+
+    return {
+      scheme: parsed.scheme,
+      host: parsed.host,
+      port: parsed.port,
+      hasAuth: Boolean(parsed.hasAuth),
+    };
+  } catch (_error) {
+    return null;
+  }
+}
+
+async function setBrowserProxyRuntimeSnapshot(snapshot) {
+  await setState({ browserProxyRuntime: snapshot });
+  broadcastDataUpdate({ browserProxyRuntime: snapshot });
+  return snapshot;
+}
+
+async function syncBrowserProxyRuntimeSnapshot(stateOverride = null, options = {}) {
+  const state = stateOverride || await getState();
+  const {
+    status,
+    mode = 'direct',
+    ok = null,
+    ip = '',
+    endpoint = '',
+    testedAt = null,
+    errorMessage = '',
+    lastProxyError = null,
+    proxy = undefined,
+    source = 'runtime',
+  } = options;
+  const proxySummary = proxy === undefined ? getConfiguredBrowserProxySummary(state) : proxy;
+  const normalizedTestedAt = Number(testedAt);
+
+  return setBrowserProxyRuntimeSnapshot({
+    status: String(status || (proxySummary ? 'pending' : 'direct')).trim().toLowerCase(),
+    mode: String(mode || (proxySummary ? 'proxy' : 'direct')).trim().toLowerCase(),
+    configured: Boolean(proxySummary),
+    ok: ok === null || ok === undefined ? null : Boolean(ok),
+    ip: String(ip || '').trim(),
+    endpoint: String(endpoint || '').trim(),
+    testedAt: Number.isFinite(normalizedTestedAt) && normalizedTestedAt > 0 ? normalizedTestedAt : null,
+    errorMessage: String(errorMessage || '').trim(),
+    proxy: proxySummary,
+    lastProxyError: lastProxyError || null,
+    source: String(source || 'runtime'),
+  });
+}
+
+async function markBrowserProxyRuntimePending(stateOverride = null, options = {}) {
+  const state = stateOverride || await getState();
+  const proxySummary = getConfiguredBrowserProxySummary(state);
+  return syncBrowserProxyRuntimeSnapshot(state, {
+    status: proxySummary ? 'pending' : 'direct',
+    mode: proxySummary ? 'proxy' : 'direct',
+    proxy: proxySummary,
+    lastProxyError: browserProxyController?.getLastProxyError?.() || null,
+    source: options.source || 'sync',
+  });
+}
+
+async function markBrowserProxyRuntimeCleared(stateOverride = null, options = {}) {
+  const state = stateOverride || await getState();
+  return syncBrowserProxyRuntimeSnapshot(state, {
+    status: 'cleared',
+    mode: 'direct',
+    testedAt: Date.now(),
+    proxy: getConfiguredBrowserProxySummary(state),
+    lastProxyError: null,
+    source: options.source || 'clear',
+  });
+}
+
+async function testConfiguredBrowserProxyAndUpdateRuntime(stateOverride = null, options = {}) {
+  if (!browserProxyController?.testProxyConnection) {
+    throw new Error('浏览器代理测试能力尚未接入。');
+  }
+
+  const state = stateOverride || await getState();
+  const result = await browserProxyController.testProxyConnection(state, options);
+  await syncBrowserProxyRuntimeSnapshot(state, {
+    status: result?.ok ? 'active' : 'error',
+    mode: result?.proxy ? 'proxy' : 'direct',
+    ok: result?.ok,
+    ip: result?.ip || '',
+    endpoint: result?.endpoint || '',
+    testedAt: result?.testedAt || Date.now(),
+    errorMessage: result?.errorMessage || '',
+    proxy: result?.proxy || getConfiguredBrowserProxySummary(state),
+    lastProxyError: result?.lastProxyError || null,
+    source: options.source || 'test',
+  });
+  return result;
+}
+
+async function ensureConfiguredBrowserProxyActive(stateOverride = null, options = {}) {
   if (!browserProxyController?.syncConfiguredProxy) {
     return { enabled: false };
   }
 
+  const { testConnection = false, runtimeSource = 'ensure' } = options;
   const state = stateOverride || await getState();
-  return browserProxyController.syncConfiguredProxy(state);
+  const result = await browserProxyController.syncConfiguredProxy(state);
+  const proxySummary = getConfiguredBrowserProxySummary(state);
+
+  if (testConnection && proxySummary && result?.enabled !== false) {
+    try {
+      await testConfiguredBrowserProxyAndUpdateRuntime(state, { source: runtimeSource });
+    } catch (error) {
+      console.warn(LOG_PREFIX, 'Failed to refresh browser proxy runtime snapshot:', error?.message || error);
+      await syncBrowserProxyRuntimeSnapshot(state, {
+        status: 'error',
+        mode: 'proxy',
+        ok: false,
+        testedAt: Date.now(),
+        errorMessage: error?.message || String(error || '代理检测失败'),
+        proxy: proxySummary,
+        lastProxyError: browserProxyController?.getLastProxyError?.() || null,
+        source: runtimeSource,
+      });
+    }
+  } else {
+    await markBrowserProxyRuntimePending(state, { source: runtimeSource });
+  }
+
+  return result;
 }
 
 async function releaseBrowserProxyIfUnused(options = {}) {
-  const { force = false } = options;
+  const { force = false, runtimeSource = 'release' } = options;
 
   if (!browserProxyController?.clearProxySettings) {
     return { cleared: false, reason: 'unsupported' };
@@ -4206,6 +4349,7 @@ async function releaseBrowserProxyIfUnused(options = {}) {
     }
 
     await browserProxyController.clearProxySettings();
+    await markBrowserProxyRuntimeCleared(null, { source: runtimeSource });
     return { cleared: true };
   } catch (error) {
     console.warn(LOG_PREFIX, 'Failed to release browser proxy:', error?.message || error);
@@ -4215,6 +4359,10 @@ async function releaseBrowserProxyIfUnused(options = {}) {
     };
   }
 }
+
+ensureConfiguredBrowserProxyActive(null, { runtimeSource: 'startup' }).catch((error) => {
+  console.warn(LOG_PREFIX, 'Failed to initialize browser proxy settings:', error?.message || error);
+});
 
 async function handleTrackedTabRemoved(tabId) {
   if (!tabRuntime?.removeTrackedTabById) {
@@ -5683,11 +5831,22 @@ async function executeStepAndWait(step, delayAfter = 2000) {
   if (step === 5) {
     const signupTabId = await getTabId('signup-page');
     if (signupTabId) {
-      await addLog('自动运行：步骤 5 已收到完成信号，正在等待当前页面完成加载...', 'info');
-      await waitForTabComplete(signupTabId, {
-        timeoutMs: 15000,
-        retryDelayMs: 300,
-      });
+      let currentSignupTab = null;
+      try {
+        currentSignupTab = await chrome.tabs.get(signupTabId);
+      } catch {
+        currentSignupTab = null;
+      }
+
+      if (isSignupProfileCompletionUrl(currentSignupTab?.url || '')) {
+        await addLog('自动运行：步骤 5 已进入引导/主站页面，跳过额外的页面 complete 等待。', 'info');
+      } else {
+        await addLog('自动运行：步骤 5 已收到完成信号，正在等待当前页面完成加载...', 'info');
+        await waitForTabComplete(signupTabId, {
+          timeoutMs: 15000,
+          retryDelayMs: 300,
+        });
+      }
     }
   }
 
@@ -6229,13 +6388,17 @@ async function ensureAutoEmailReady(targetRun, totalRuns, attemptRuns) {
 async function runAutoSequenceFromStep(startStep, context = {}) {
   const { targetRun, totalRuns, attemptRuns, continued = false } = context;
   let postStep7RestartCount = 0;
+  let step3RestartCount = 0;
   let step4RestartCount = 0;
   let currentStartStep = startStep;
   let continueCurrentAttempt = continued;
 
   while (true) {
   if (typeof ensureConfiguredBrowserProxyActive === 'function') {
-    await ensureConfiguredBrowserProxyActive();
+    await ensureConfiguredBrowserProxyActive(null, {
+      testConnection: true,
+      runtimeSource: 'auto-run',
+    });
   }
 
   if (continueCurrentAttempt) {
@@ -6265,7 +6428,43 @@ async function runAutoSequenceFromStep(startStep, context = {}) {
     if (isStepDoneStatus(step3Status)) {
       await addLog(`自动运行：步骤 3 当前状态为 ${step3Status}，将直接继续后续流程。`, 'info');
     } else {
-      await executeStepAndWait(3, AUTO_STEP_DELAYS[3]);
+      try {
+        await executeStepAndWait(3, AUTO_STEP_DELAYS[3]);
+      } catch (err) {
+        if (isStopError(err)) {
+          throw err;
+        }
+
+        const latestStep3State = await getState();
+        const step3ErrorMessage = getErrorMessage(err);
+        const isHotmailStep3RetryExhausted = step3ErrorMessage.startsWith('STEP3_PASSWORD_RETRY_EXHAUSTED::')
+          && String(latestStep3State?.mailProvider || '').trim().toLowerCase() === 'hotmail';
+
+        if (!isHotmailStep3RetryExhausted) {
+          throw err;
+        }
+
+        step3RestartCount += 1;
+        const currentEmail = String(latestStep3State?.email || '').trim();
+        const emailSuffix = currentEmail ? `当前邮箱：${currentEmail}。` : '';
+        const restartReason = step3ErrorMessage.replace(/^STEP3_PASSWORD_RETRY_EXHAUSTED::/, '').trim() || step3ErrorMessage;
+
+        await addLog(
+          `步骤 3：填写密码后连续重试 3 次仍未成功，准备清理 cookies 并切换下一个 Hotmail 邮箱重新开始（第 ${step3RestartCount} 次切换）。${emailSuffix}原因：${restartReason}`,
+          'warn'
+        );
+        const removedCookieCount = await clearPreLoginCookiesDirectly('步骤 3');
+        await addLog(`步骤 3：已立即清理 ${removedCookieCount} 个 ChatGPT / OpenAI cookies，准备切换下一个 Hotmail 邮箱并从步骤 1 重新开始。`, 'ok');
+        await setState({ currentHotmailAccountId: null });
+        broadcastDataUpdate({ currentHotmailAccountId: null });
+        await setEmailStateSilently(null);
+        await invalidateDownstreamAfterStepRestart(1, {
+          logLabel: `步骤 3 密码重试耗尽后准备切换下一个 Hotmail 邮箱并从步骤 1 重新开始（第 ${step3RestartCount} 次切换）`,
+        });
+        currentStartStep = 1;
+        continueCurrentAttempt = true;
+        continue;
+      }
     }
   } else {
     await addLog(`=== 目标 ${targetRun}/${totalRuns} 轮：继续执行剩余流程（第 ${attemptRuns} 次尝试）===`, 'info');
@@ -6775,8 +6974,8 @@ const messageRouter = self.MultiPageBackgroundMessageRouter?.createMessageRouter
   invalidateBrowserProxyAffectedTabs: () => tabRuntime?.invalidateTrackedSources?.(BROWSER_PROXY_AFFECTED_SOURCES),
   pollContributionStatus: (...args) => contributionOAuthManager?.pollContributionStatus?.(...args),
   syncHotmailAccounts,
-  syncConfiguredBrowserProxy: (...args) => browserProxyController?.syncConfiguredProxy?.(...args),
-  testConfiguredBrowserProxy: (...args) => browserProxyController?.testProxyConnection?.(...args),
+  syncConfiguredBrowserProxy: (...args) => ensureConfiguredBrowserProxyActive(...args),
+  testConfiguredBrowserProxy: (...args) => testConfiguredBrowserProxyAndUpdateRuntime(...args),
   deleteMail2925Account,
   deleteMail2925Accounts,
   testHotmailAccountMailAccess,
@@ -7068,17 +7267,10 @@ async function removeCookieDirectly(cookie) {
   }
 }
 
-async function runPreStep6CookieCleanup() {
-  await addLog(
-    `步骤 6：开始前等待 ${Math.round(STEP6_PRE_LOGIN_COOKIE_CLEAR_DELAY_MS / 1000)} 秒，然后直接删除 ChatGPT / OpenAI cookies...`,
-    'info'
-  );
-
-  await sleepWithStop(STEP6_PRE_LOGIN_COOKIE_CLEAR_DELAY_MS);
-
+async function clearPreLoginCookiesDirectly(logLabel = 'Cookie 清理') {
   if (!chrome.cookies?.getAll || !chrome.cookies?.remove) {
-    await addLog('步骤 6：当前浏览器不支持 cookies API，无法直接删除 cookies。', 'warn');
-    return;
+    await addLog(`${logLabel}：当前浏览器不支持 cookies API，无法直接删除 cookies。`, 'warn');
+    return 0;
   }
 
   const cookies = await collectCookiesForPreLoginCleanup();
@@ -7098,10 +7290,22 @@ async function runPreStep6CookieCleanup() {
         origins: PRE_LOGIN_COOKIE_CLEAR_ORIGINS,
       });
     } catch (err) {
-      await addLog(`步骤 6：browsingData 补扫 cookies 失败：${getErrorMessage(err)}`, 'warn');
+      await addLog(`${logLabel}：browsingData 补扫 cookies 失败：${getErrorMessage(err)}`, 'warn');
     }
   }
 
+  return removedCount;
+}
+
+async function runPreStep6CookieCleanup() {
+  await addLog(
+    `步骤 6：开始前等待 ${Math.round(STEP6_PRE_LOGIN_COOKIE_CLEAR_DELAY_MS / 1000)} 秒，然后直接删除 ChatGPT / OpenAI cookies...`,
+    'info'
+  );
+
+  await sleepWithStop(STEP6_PRE_LOGIN_COOKIE_CLEAR_DELAY_MS);
+
+  const removedCount = await clearPreLoginCookiesDirectly('步骤 6');
   await addLog(`步骤 6：已直接删除 ${removedCount} 个 ChatGPT / OpenAI cookies，准备继续获取链接并登录。`, 'ok');
 }
 

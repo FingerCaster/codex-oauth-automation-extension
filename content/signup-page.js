@@ -283,7 +283,7 @@ async function handle405ResendError(step, remainingTimeout = 30000) {
 
 const SIGNUP_ENTRY_TRIGGER_PATTERN = /免费注册|立即注册|注册|sign\s*up|register|create\s*account|create\s+account/i;
 const SIGNUP_EMAIL_INPUT_SELECTOR = 'input[type="email"], input[name="email"], input[name="username"], input[id*="email"], input[placeholder*="email" i]';
-const SIGNUP_GUIDE_PAGE_PATTERN = /welcome\s+to\s+chatgpt|try\s+our\s+latest\s+models|how\s+would\s+you\s+like\s+to\s+use\s+chatgpt|choose\s+how\s+you(?:'d|\s+would)?\s+like\s+to\s+use\s+chatgpt|欢迎使用\s*chatgpt|欢迎来到\s*chatgpt|开始使用\s*chatgpt|让我们开始/i;
+const SIGNUP_GUIDE_PAGE_PATTERN = /welcome\s+to\s+chatgpt|try\s+our\s+latest\s+models|how\s+would\s+you\s+like\s+to\s+use\s+chatgpt|choose\s+how\s+you(?:'d|\s+would)?\s+like\s+to\s+use\s+chatgpt|what\s+brings\s+you\s+to\s+chatgpt|what\s+brings\s+you\s+here|欢迎使用\s*chatgpt|欢迎来到\s*chatgpt|开始使用\s*chatgpt|让我们开始|是什么促使你使用\s*chatgpt|你想如何使用\s*chatgpt|我们会利用这些信息提出.*建议|学校\s*工作\s*个人任务\s*(?:乐趣和娱乐|娱乐和乐趣|乐趣|娱乐)?\s*其他/i;
 const SIGNUP_GUIDE_ACTION_PATTERN = /get\s+started|continue|next|开始|继续|下一步|跳过/i;
 
 function getSignupEmailInput() {
@@ -1687,6 +1687,11 @@ async function prepareSignupVerificationFlow(payload = {}, timeout = 30000) {
   const start = Date.now();
   let recoveryRound = 0;
   const maxRecoveryRounds = slowNavigationMode ? 4 : 3;
+  const isStep3Finalize = prepareSource === 'step3_finalize';
+  const step3PasswordRetryExhaustedPrefix = 'STEP3_PASSWORD_RETRY_EXHAUSTED::';
+  const maxStep3PasswordRetryAttempts = 3;
+  let step3PasswordRetryCount = 0;
+  let lastStep3RetryState = '';
 
   while (Date.now() - start < resolvedTimeout && recoveryRound < maxRecoveryRounds) {
     throwIfStopped();
@@ -1715,12 +1720,31 @@ async function prepareSignupVerificationFlow(payload = {}, timeout = 30000) {
       if (snapshot.userAlreadyExistsBlocked) {
         throw createSignupUserAlreadyExistsError();
       }
-      await recoverCurrentAuthRetryPage({
-        flow: 'signup',
-        logLabel: `${prepareLogLabel}：检测到注册认证重试页，正在点击“重试”恢复（第 ${recoveryRound}/${maxRecoveryRounds} 次）`,
-        step: 4,
-        timeoutMs: 12000,
-      });
+      if (isStep3Finalize && step3PasswordRetryCount >= maxStep3PasswordRetryAttempts) {
+        throw new Error(`${step3PasswordRetryExhaustedPrefix}步骤 3 填写密码后已重试 ${step3PasswordRetryCount} 次，仍未进入验证码页（当前停留在认证重试页）。URL: ${location.href}`);
+      }
+      if (isStep3Finalize) {
+        step3PasswordRetryCount += 1;
+        lastStep3RetryState = 'error';
+      }
+      try {
+        await recoverCurrentAuthRetryPage({
+          flow: 'signup',
+          logLabel: `${prepareLogLabel}：检测到注册认证重试页，正在点击“重试”恢复（第 ${recoveryRound}/${maxRecoveryRounds} 次）`,
+          step: 4,
+          timeoutMs: 12000,
+        });
+      } catch (error) {
+        if (isStep3Finalize) {
+          const recoveryErrorMessage = error?.message || String(error || '');
+          if (!/^CF_SECURITY_BLOCKED::|^SIGNUP_USER_ALREADY_EXISTS::/.test(recoveryErrorMessage)) {
+            throw new Error(
+              `${step3PasswordRetryExhaustedPrefix}步骤 3 填写密码后在注册重试页恢复失败。${recoveryErrorMessage}`
+            );
+          }
+        }
+        throw error;
+      }
       continue;
     }
 
@@ -1736,6 +1760,13 @@ async function prepareSignupVerificationFlow(payload = {}, timeout = 30000) {
       }
 
       if (snapshot.submitButton && isActionEnabled(snapshot.submitButton)) {
+        if (isStep3Finalize && step3PasswordRetryCount >= maxStep3PasswordRetryAttempts) {
+          throw new Error(`${step3PasswordRetryExhaustedPrefix}步骤 3 填写密码后已重试 ${step3PasswordRetryCount} 次，仍停留在密码页。URL: ${location.href}`);
+        }
+        if (isStep3Finalize) {
+          step3PasswordRetryCount += 1;
+          lastStep3RetryState = 'password';
+        }
         log(`${prepareLogLabel}：页面仍停留在密码页，正在重新点击“继续”（第 ${recoveryRound}/${maxRecoveryRounds} 次）...`, 'warn');
         await humanPause(350, 900);
         simulateClick(snapshot.submitButton);
@@ -1750,6 +1781,14 @@ async function prepareSignupVerificationFlow(payload = {}, timeout = 30000) {
     log(`${prepareLogLabel}：页面仍在切换中，准备继续等待（${recoveryRound}/${maxRecoveryRounds}）...`, 'warn');
   }
 
+  if (isStep3Finalize && step3PasswordRetryCount >= maxStep3PasswordRetryAttempts) {
+    const lastStateLabel = lastStep3RetryState === 'error'
+      ? '认证重试页'
+      : lastStep3RetryState === 'password'
+        ? '密码页'
+        : '未知页面';
+    throw new Error(`${step3PasswordRetryExhaustedPrefix}步骤 3 填写密码后已重试 ${step3PasswordRetryCount} 次，仍未进入验证码页（最后停留：${lastStateLabel}）。URL: ${location.href}`);
+  }
   throw new Error(`等待注册验证码页面就绪超时或自动恢复失败（已尝试 ${recoveryRound}/${maxRecoveryRounds} 轮）。URL: ${location.href}`);
 }
 

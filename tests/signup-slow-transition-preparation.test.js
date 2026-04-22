@@ -109,6 +109,115 @@ return {
   assert.equal(snapshot.logs.some(({ message }) => /先等待 10 秒/.test(message)), true);
 });
 
+test('signup password preparation throws a dedicated error after 3 password resubmits still fail', async () => {
+  const api = new Function(`
+const clicks = [];
+const location = { href: 'https://auth.openai.com/u/signup/password' };
+
+async function waitForSignupVerificationTransition() {
+  return {
+    state: 'password',
+    passwordInput: { value: 'Secret123!' },
+    submitButton: { id: 'submit' },
+  };
+}
+
+function throwIfStopped() {}
+function log() {}
+function createSignupUserAlreadyExistsError() {
+  return new Error('should not create user already exists error');
+}
+async function recoverCurrentAuthRetryPage() {
+  throw new Error('recoverCurrentAuthRetryPage should not be called');
+}
+async function humanPause() {}
+function fillInput() {}
+function isActionEnabled() {
+  return true;
+}
+function simulateClick(button) {
+  clicks.push(button);
+}
+async function sleep() {}
+
+${extractFunction('prepareSignupVerificationFlow')}
+
+return {
+  async run() {
+    try {
+      await prepareSignupVerificationFlow({
+        password: 'Secret123!',
+        prepareSource: 'step3_finalize',
+        prepareLogLabel: '步骤 3 收尾',
+      });
+      return null;
+    } catch (error) {
+      return { error, clickCount: clicks.length };
+    }
+  },
+};
+`)();
+
+  const result = await api.run();
+
+  assert.ok(result);
+  assert.match(result.error.message, /^STEP3_PASSWORD_RETRY_EXHAUSTED::/);
+  assert.equal(result.clickCount, 3);
+});
+
+test('signup password preparation wraps retry-page recovery failure into the dedicated step3 exhausted error', async () => {
+  const api = new Function(`
+const location = { href: 'https://auth.openai.com/u/signup/retry' };
+
+async function waitForSignupVerificationTransition() {
+  return {
+    state: 'error',
+    userAlreadyExistsBlocked: false,
+  };
+}
+
+function throwIfStopped() {}
+function log() {}
+function createSignupUserAlreadyExistsError() {
+  return new Error('should not create user already exists error');
+}
+async function recoverCurrentAuthRetryPage() {
+  throw new Error('步骤 3 收尾：检测到注册认证重试页，正在点击“重试”恢复（第 1/4 次）失败：已连续点击“重试” 5 次，页面仍未恢复。URL: https://auth.openai.com/u/signup/retry');
+}
+async function humanPause() {}
+function fillInput() {}
+function isActionEnabled() {
+  return true;
+}
+function simulateClick() {}
+async function sleep() {}
+
+${extractFunction('prepareSignupVerificationFlow')}
+
+return {
+  async run() {
+    try {
+      await prepareSignupVerificationFlow({
+        password: 'Secret123!',
+        prepareSource: 'step3_finalize',
+        prepareLogLabel: '步骤 3 收尾',
+        slowNavigationMode: true,
+      });
+      return null;
+    } catch (error) {
+      return error;
+    }
+  },
+};
+`)();
+
+  const error = await api.run();
+
+  assert.ok(error);
+  assert.match(error.message, /^STEP3_PASSWORD_RETRY_EXHAUSTED::/);
+  assert.match(error.message, /已连续点击“重试” 5 次/);
+});
+
 test('signup profile completion preparation keeps waiting longer in slow navigation mode until the page leaves step 5', async () => {
   const api = new Function(`
 const waits = [];

@@ -1688,7 +1688,7 @@ function setBrowserProxyTestStatusText(text = '', options = {}) {
 
 function getPendingBrowserProxyTestStatusText() {
   return inputBrowserProxyUrl?.value?.trim()
-    ? '已配置代理，待测试'
+    ? '代理已应用，待检测 IP'
     : '当前直连';
 }
 
@@ -1723,6 +1723,89 @@ function buildBrowserProxyTestToastMessage(result = {}) {
   }
 
   return `${result.proxy ? '代理' : '直连'}测试失败：${result?.errorMessage || '无法获取当前出口 IP'}，${proxyLabel}${proxyErrorLabel}`;
+}
+
+function formatBrowserProxyRuntimeTestedAt(timestamp) {
+  const normalizedTimestamp = Number(timestamp);
+  if (!Number.isFinite(normalizedTimestamp) || normalizedTimestamp <= 0) {
+    return '';
+  }
+
+  return new Date(normalizedTimestamp).toLocaleString('zh-CN', {
+    hour12: false,
+    timeZone: DISPLAY_TIMEZONE,
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+}
+
+function formatBrowserProxyRuntimeStatusText(runtime = null, options = {}) {
+  const hasConfiguredProxy = options.hasConfiguredProxy !== undefined
+    ? Boolean(options.hasConfiguredProxy)
+    : Boolean(inputBrowserProxyUrl?.value?.trim());
+  const runtimeStatus = String(runtime?.status || '').trim().toLowerCase();
+  const runtimeMode = String(runtime?.mode || (runtime?.proxy ? 'proxy' : (hasConfiguredProxy ? 'proxy' : 'direct'))).trim().toLowerCase();
+
+  if (runtime?.ok && runtime?.ip) {
+    return runtimeMode === 'proxy'
+      ? `代理出口 ${runtime.ip}`
+      : `直连出口 ${runtime.ip}`;
+  }
+
+  if (runtime?.ok === false || runtimeStatus === 'error') {
+    return runtimeMode === 'proxy'
+      ? '代理出口检测失败'
+      : '直连出口检测失败';
+  }
+
+  if (runtimeStatus === 'cleared' || runtimeStatus === 'direct') {
+    return '当前直连';
+  }
+
+  if (runtimeStatus === 'pending' || runtimeMode === 'proxy' || hasConfiguredProxy) {
+    return getPendingBrowserProxyTestStatusText();
+  }
+
+  return '当前直连';
+}
+
+function buildBrowserProxyRuntimeStatusTitle(runtime = null, options = {}) {
+  const hasConfiguredProxy = options.hasConfiguredProxy !== undefined
+    ? Boolean(options.hasConfiguredProxy)
+    : Boolean(inputBrowserProxyUrl?.value?.trim());
+  const runtimeStatus = String(runtime?.status || '').trim().toLowerCase();
+  const testedAtLabel = formatBrowserProxyRuntimeTestedAt(runtime?.testedAt);
+
+  if (runtime?.ok !== null && runtime?.ok !== undefined) {
+    const baseTitle = buildBrowserProxyTestToastMessage(runtime);
+    return testedAtLabel
+      ? `${baseTitle}；检测时间 ${testedAtLabel}`
+      : baseTitle;
+  }
+
+  if (runtimeStatus === 'cleared') {
+    return hasConfiguredProxy
+      ? '当前代理已断开；代理地址配置仍会保留，下次执行或下一轮开始时会重新连接并刷新出口 IP。'
+      : '当前代理已断开，浏览器正在直连。';
+  }
+
+  if (runtimeStatus === 'pending' || runtime?.proxy || hasConfiguredProxy) {
+    return `浏览器代理已应用：${formatBrowserProxySummary(runtime?.proxy)}；等待检测当前出口 IP。`;
+  }
+
+  return '当前未配置浏览器代理，浏览器正在直连。';
+}
+
+function applyBrowserProxyRuntimeStatus(runtime = null, options = {}) {
+  setBrowserProxyTestStatusText(
+    formatBrowserProxyRuntimeStatusText(runtime, options),
+    {
+      title: buildBrowserProxyRuntimeStatusTitle(runtime, options),
+    }
+  );
 }
 
 async function clearActiveBrowserProxyRuntime() {
@@ -2080,7 +2163,6 @@ function renderStepsList() {
 // ============================================================
 
 function applySettingsState(state) {
-  const previousBrowserProxyUrl = String(latestState?.browserProxyUrl || '').trim();
   syncLatestState(state);
   syncAutoRunState(state);
 
@@ -2089,9 +2171,9 @@ function applySettingsState(state) {
   inputVpsUrl.value = state?.vpsUrl || '';
   inputVpsPassword.value = state?.vpsPassword || '';
   inputBrowserProxyUrl.value = normalizeBrowserProxyUrlValue(state?.browserProxyUrl);
-  if (String(state?.browserProxyUrl || '').trim() !== previousBrowserProxyUrl) {
-    setBrowserProxyTestStatusText(getPendingBrowserProxyTestStatusText());
-  }
+  applyBrowserProxyRuntimeStatus(state?.browserProxyRuntime, {
+    hasConfiguredProxy: Boolean(String(state?.browserProxyUrl || '').trim()),
+  });
   setLocalCpaSkippedSteps(resolveLocalCpaSkippedStepsState(state));
   selectPanelMode.value = state?.panelMode || 'cpa';
   inputSub2ApiUrl.value = state?.sub2apiUrl || '';
@@ -4897,6 +4979,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (message.payload.browserProxyUrl !== undefined && inputBrowserProxyUrl) {
         inputBrowserProxyUrl.value = normalizeBrowserProxyUrlValue(message.payload.browserProxyUrl);
         setBrowserProxyTestStatusText(getPendingBrowserProxyTestStatusText());
+      }
+      if (message.payload.browserProxyRuntime !== undefined) {
+        applyBrowserProxyRuntimeStatus(message.payload.browserProxyRuntime, {
+          hasConfiguredProxy: Boolean(String(latestState?.browserProxyUrl || '').trim()),
+        });
       }
       if (message.payload.oauthUrl !== undefined) {
         displayOauthUrl.textContent = message.payload.oauthUrl || '等待中...';

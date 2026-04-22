@@ -653,6 +653,10 @@
           break;
         }
 
+        if (targetRun < totalRuns) {
+          await releaseBrowserProxy({ force: true });
+        }
+
         try {
           const parkedForNextRound = await waitBetweenAutoRunRounds(targetRun, totalRuns, roundSummary, {
             autoRunSkipFailures,
