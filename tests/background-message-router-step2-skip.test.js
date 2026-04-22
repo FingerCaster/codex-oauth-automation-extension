@@ -53,7 +53,7 @@ function createRouter(overrides = {}) {
       events.finalizeStep5Payloads.push(payload);
     }),
     finalizeIcloudAliasAfterSuccessfulFlow: async () => {},
-    findHotmailAccount: async () => null,
+    findHotmailAccount: overrides.findHotmailAccount || (async () => null),
     flushCommand: async () => {},
     getCurrentLuckmailPurchase: () => null,
     getPendingAutoRunTimerPlan: () => null,
@@ -70,14 +70,14 @@ function createRouter(overrides = {}) {
     invalidateDownstreamAfterStepRestart: async () => {},
     isCloudflareSecurityBlockedError: overrides.isCloudflareSecurityBlockedError || ((error) => /^CF_SECURITY_BLOCKED::/.test(typeof error === 'string' ? error : error?.message || '')),
     isAutoRunLockedState: () => false,
-    isHotmailProvider: () => false,
+    isHotmailProvider: overrides.isHotmailProvider || (() => false),
     isLocalhostOAuthCallbackUrl: () => true,
     isLuckmailProvider: () => false,
     isStopError: () => false,
     launchAutoRunTimerPlan: async () => {},
     listIcloudAliases: async () => [],
     listLuckmailPurchasesForManagement: async () => [],
-    normalizeHotmailAccounts: (items) => items,
+    normalizeHotmailAccounts: overrides.normalizeHotmailAccounts || ((items) => items),
     normalizeRunCount: (value) => value,
     AUTO_RUN_TIMER_KIND_SCHEDULED_START: 'scheduled',
     notifyStepComplete: (step, payload) => {
@@ -86,7 +86,7 @@ function createRouter(overrides = {}) {
     notifyStepError: (step, error) => {
       events.notifyErrors.push({ step, error });
     },
-    patchHotmailAccount: async () => {},
+    patchHotmailAccount: overrides.patchHotmailAccount || (async () => {}),
     registerTab: async () => {},
     requestStop: async () => {},
     resetState: async () => {},
@@ -234,6 +234,40 @@ test('message router finalizes step 5 before marking it completed', async () => 
     },
   ]);
   assert.deepStrictEqual(response, { ok: true });
+});
+
+test('message router marks current hotmail account used after step 4 without clearing current selection', async () => {
+  const patchCalls = [];
+  const { router, events } = createRouter({
+    state: {
+      currentHotmailAccountId: 'hotmail-1',
+      hotmailAccounts: [
+        { id: 'hotmail-1', email: 'alpha@hotmail.com', used: false },
+      ],
+    },
+    findHotmailAccount: (accounts, accountId) => accounts.find((account) => account.id === accountId) || null,
+    isHotmailProvider: () => true,
+    patchHotmailAccount: async (...args) => {
+      patchCalls.push(args);
+      return {
+        id: 'hotmail-1',
+        email: 'alpha@hotmail.com',
+        used: true,
+        lastUsedAt: args[1]?.lastUsedAt,
+      };
+    },
+  });
+
+  await router.handleStepData(4, {
+    emailTimestamp: 12345,
+  });
+
+  assert.equal(patchCalls.length, 1);
+  assert.equal(patchCalls[0][0], 'hotmail-1');
+  assert.equal(patchCalls[0][1]?.used, true);
+  assert.equal(typeof patchCalls[0][1]?.lastUsedAt, 'number');
+  assert.deepStrictEqual(patchCalls[0][2], { preserveCurrentSelection: true });
+  assert.equal(events.logs.some(({ message }) => message === '当前 Hotmail 账号已在步骤 4 成功后标记为已用。'), true);
 });
 
 test('message router marks step 5 failed when post-submit finalize fails', async () => {

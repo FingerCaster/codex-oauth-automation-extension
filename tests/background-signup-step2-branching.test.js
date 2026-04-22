@@ -306,3 +306,46 @@ test('signup flow helper finalizes step 5 submit via signup profile completion p
   });
   assert.equal(messages.find((item) => item.type === 'send')?.options?.timeoutMs, 45000);
 });
+
+test('signup flow helper treats chatgpt main domain as completed after step 5', async () => {
+  let ensureCalls = 0;
+  let sendCalls = 0;
+
+  const helpers = signupFlowApi.createSignupFlowHelpers({
+    buildGeneratedAliasEmail: () => '',
+    chrome: { tabs: { get: async () => ({ id: 33, url: 'https://chatgpt.com/' }) } },
+    ensureContentScriptReadyOnTab: async () => {
+      ensureCalls += 1;
+    },
+    ensureHotmailAccountForFlow: async () => ({}),
+    ensureLuckmailPurchaseForFlow: async () => ({}),
+    isGeneratedAliasProvider: () => false,
+    isReusableGeneratedAliasEmail: () => false,
+    isHotmailProvider: () => false,
+    isLuckmailProvider: () => false,
+    isSignupEmailVerificationPageUrl: () => false,
+    isSignupPasswordPageUrl: () => false,
+    reuseOrCreateTab: async () => 33,
+    sendToContentScriptResilient: async () => {
+      sendCalls += 1;
+      return { ready: true };
+    },
+    setEmailState: async () => {},
+    SIGNUP_ENTRY_URL: 'https://chatgpt.com/',
+    SIGNUP_PAGE_INJECT_FILES: ['content/utils.js', 'content/signup-page.js'],
+    waitForTabUrlMatch: async () => ({
+      id: 33,
+      url: 'https://chatgpt.com/',
+    }),
+  });
+
+  const result = await helpers.finalizeSignupProfileSubmitInTab(33, 5, { slowNavigationMode: true });
+
+  assert.deepStrictEqual(result, {
+    ready: true,
+    url: 'https://chatgpt.com/',
+    completedByUrl: true,
+  });
+  assert.equal(ensureCalls, 0);
+  assert.equal(sendCalls, 0);
+});

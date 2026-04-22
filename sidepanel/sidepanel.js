@@ -154,8 +154,10 @@ const inputHotmailClientId = document.getElementById('input-hotmail-client-id');
 const inputHotmailPassword = document.getElementById('input-hotmail-password');
 const inputHotmailRefreshToken = document.getElementById('input-hotmail-refresh-token');
 const inputHotmailImport = document.getElementById('input-hotmail-import');
+const inputHotmailSearch = document.getElementById('input-hotmail-search');
 const btnAddHotmailAccount = document.getElementById('btn-add-hotmail-account');
 const btnImportHotmailAccounts = document.getElementById('btn-import-hotmail-accounts');
+const btnSearchHotmailAccounts = document.getElementById('btn-search-hotmail-accounts');
 const btnToggleHotmailForm = document.getElementById('btn-toggle-hotmail-form');
 const btnBatchVerifyHotmailAccounts = document.getElementById('btn-batch-verify-hotmail-accounts');
 const btnHotmailUsageGuide = document.getElementById('btn-hotmail-usage-guide');
@@ -3417,6 +3419,8 @@ const hotmailManager = window.SidepanelHotmailManager?.createHotmailManager({
     inputHotmailImport,
     inputHotmailPassword,
     inputHotmailRefreshToken,
+    inputHotmailSearch,
+    btnSearchHotmailAccounts,
     selectMailProvider,
   },
   helpers: {

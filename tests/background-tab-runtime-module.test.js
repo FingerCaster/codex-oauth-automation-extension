@@ -59,6 +59,55 @@ test('tab runtime waitForTabComplete waits until tab status becomes complete', a
   assert.equal(getCalls, 3);
 });
 
+test('tab runtime waitForTabComplete keeps waiting longer when browser proxy is configured', async () => {
+  const source = fs.readFileSync('background/tab-runtime.js', 'utf8');
+  const globalScope = {};
+  const api = new Function('self', `${source}; return self.MultiPageBackgroundTabRuntime;`)(globalScope);
+
+  let fakeNow = 0;
+  const originalDateNow = Date.now;
+  Date.now = () => fakeNow;
+
+  try {
+    const runtime = api.createTabRuntime({
+      LOG_PREFIX: '[test]',
+      addLog: async () => {},
+      chrome: {
+        tabs: {
+          get: async () => ({
+            id: 9,
+            url: 'https://example.com',
+            status: fakeNow >= 20000 ? 'complete' : 'loading',
+          }),
+          query: async () => [],
+        },
+      },
+      getSourceLabel: (sourceName) => sourceName || 'unknown',
+      getState: async () => ({
+        browserProxyUrl: 'http://user:pass@proxy.example.com:8080',
+        tabRegistry: {},
+        sourceLastUrls: {},
+      }),
+      matchesSourceUrlFamily: () => false,
+      setState: async () => {},
+      sleepWithStop: async (ms) => {
+        fakeNow += ms;
+      },
+      throwIfStopped: () => {},
+    });
+
+    const result = await runtime.waitForTabComplete(9, {
+      timeoutMs: 15000,
+      retryDelayMs: 1000,
+    });
+
+    assert.equal(result?.status, 'complete');
+    assert.ok(fakeNow >= 20000);
+  } finally {
+    Date.now = originalDateNow;
+  }
+});
+
 test('tab runtime waitForTabComplete aborts promptly when stop is requested', async () => {
   const source = fs.readFileSync('background/tab-runtime.js', 'utf8');
   const globalScope = {};
@@ -97,6 +146,103 @@ test('tab runtime waitForTabComplete aborts promptly when stop is requested', as
     }),
     /Flow stopped\./
   );
+});
+
+test('tab runtime keeps retrying content script readiness longer when browser proxy is configured', async () => {
+  const source = fs.readFileSync('background/tab-runtime.js', 'utf8');
+  const globalScope = {};
+  const api = new Function('self', `${source}; return self.MultiPageBackgroundTabRuntime;`)(globalScope);
+
+  let fakeNow = 0;
+  let injectCalls = 0;
+  const originalDateNow = Date.now;
+  Date.now = () => fakeNow;
+
+  const state = {
+    browserProxyUrl: 'http://user:pass@proxy.example.com:8080',
+    tabRegistry: {},
+    sourceLastUrls: {},
+  };
+
+  try {
+    const runtime = api.createTabRuntime({
+      LOG_PREFIX: '[test]',
+      addLog: async () => {},
+      chrome: {
+        tabs: {
+          get: async () => ({
+            id: 9,
+            url: 'https://example.com/signup',
+            status: 'loading',
+          }),
+          query: async () => [],
+          sendMessage: async () => (fakeNow >= 35000 ? { ok: true, source: 'signup-page' } : null),
+        },
+        scripting: {
+          executeScript: async () => {
+            injectCalls += 1;
+          },
+        },
+      },
+      getSourceLabel: (sourceName) => sourceName || 'unknown',
+      getState: async () => state,
+      matchesSourceUrlFamily: () => false,
+      setState: async (updates) => {
+        Object.assign(state, updates);
+      },
+      sleepWithStop: async (ms) => {
+        fakeNow += ms;
+      },
+      throwIfStopped: () => {},
+    });
+
+    await runtime.ensureContentScriptReadyOnTab('signup-page', 9, {
+      inject: ['content/signup-page.js'],
+      timeoutMs: 30000,
+      retryDelayMs: 5000,
+    });
+
+    assert.ok(fakeNow >= 35000);
+    assert.ok(injectCalls >= 1);
+    assert.deepStrictEqual(state.tabRegistry['signup-page'], { tabId: 9, ready: true });
+  } finally {
+    Date.now = originalDateNow;
+  }
+});
+
+test('tab runtime extends content script response timeout when browser proxy is configured', async () => {
+  const source = fs.readFileSync('background/tab-runtime.js', 'utf8');
+  const globalScope = {};
+  const api = new Function('self', `${source}; return self.MultiPageBackgroundTabRuntime;`)(globalScope);
+
+  const runtime = api.createTabRuntime({
+    LOG_PREFIX: '[test]',
+    addLog: async () => {},
+    chrome: {
+      tabs: {
+        get: async () => ({ id: 9, url: 'https://example.com', status: 'complete' }),
+        query: async () => [],
+      },
+    },
+    getSourceLabel: (sourceName) => sourceName || 'unknown',
+    getState: async () => ({
+      browserProxyUrl: 'http://user:pass@proxy.example.com:8080',
+      tabRegistry: {},
+      sourceLastUrls: {},
+    }),
+    matchesSourceUrlFamily: () => false,
+    setState: async () => {},
+    throwIfStopped: () => {},
+  });
+
+  const responseTimeoutMs = await runtime.getEffectiveContentScriptResponseTimeoutMs({
+    type: 'PREPARE_SIGNUP_VERIFICATION',
+    step: 4,
+    source: 'background',
+    payload: {},
+  });
+
+  assert.equal(responseTimeoutMs, 90000);
 });
 
 test('tab runtime can invalidate tracked sources after proxy changes', async () => {

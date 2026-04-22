@@ -23,6 +23,55 @@
       waitForTabUrlMatch,
     } = deps;
 
+    function parseUrlSafely(rawUrl) {
+      try {
+        return new URL(String(rawUrl || ''));
+      } catch {
+        return null;
+      }
+    }
+
+    function isSignupEntryHost(hostname = '') {
+      return ['chatgpt.com', 'chat.openai.com'].includes(String(hostname || '').trim().toLowerCase());
+    }
+
+    function isSignupProfileCompletionUrl(rawUrl) {
+      const parsed = parseUrlSafely(rawUrl);
+      return Boolean(parsed) && isSignupEntryHost(parsed.hostname);
+    }
+
+    async function waitForSignupProfileCompletionByUrl(tabId, options = {}) {
+      const matchedTab = await waitForTabUrlMatch(
+        tabId,
+        (url) => isSignupProfileCompletionUrl(url),
+        options
+      );
+      if (!matchedTab) {
+        return null;
+      }
+      return {
+        ready: true,
+        url: matchedTab.url || '',
+        completedByUrl: true,
+      };
+    }
+
+    async function getSignupProfileCompletionFromCurrentTab(tabId) {
+      try {
+        const currentTab = await chrome.tabs.get(tabId);
+        if (isSignupProfileCompletionUrl(currentTab?.url)) {
+          return {
+            ready: true,
+            url: currentTab.url || '',
+            completedByUrl: true,
+          };
+        }
+      } catch {
+        return null;
+      }
+      return null;
+    }
+
     async function openSignupEntryTab(step = 1) {
       const tabId = await reuseOrCreateTab('signup-page', SIGNUP_ENTRY_URL, {
         inject: SIGNUP_PAGE_INJECT_FILES,
@@ -202,6 +251,7 @@
       const slowNavigationMode = Boolean(options?.slowNavigationMode);
       const readyTimeoutMs = slowNavigationMode ? 60000 : 45000;
       const finalizeTimeoutMs = slowNavigationMode ? 45000 : 20000;
+      const directUrlWaitMs = Math.min(finalizeTimeoutMs, slowNavigationMode ? 6000 : 2500);
       const payload = {
         prepareSource: 'step5_finalize',
         prepareLogLabel: '步骤 5 收尾',
@@ -210,30 +260,46 @@
         payload.slowNavigationMode = true;
       }
 
-      await ensureContentScriptReadyOnTab('signup-page', tabId, {
-        inject: SIGNUP_PAGE_INJECT_FILES,
-        injectSource: 'signup-page',
-        timeoutMs: readyTimeoutMs,
-        retryDelayMs: 900,
-        logMessage: `步骤 ${step}：资料页正在提交或跳转，正在等待页面恢复后继续确认...`,
+      const directUrlResult = await waitForSignupProfileCompletionByUrl(tabId, {
+        timeoutMs: directUrlWaitMs,
+        retryDelayMs: 300,
       });
-
-      const result = await sendToContentScriptResilient('signup-page', {
-        type: 'PREPARE_SIGNUP_PROFILE_COMPLETION',
-        step,
-        source: 'background',
-        payload,
-      }, {
-        timeoutMs: finalizeTimeoutMs,
-        retryDelayMs: 700,
-        logMessage: `步骤 ${step}：资料页已提交，正在确认页面是否真正进入下一阶段...`,
-      });
-
-      if (result?.error) {
-        throw new Error(result.error);
+      if (directUrlResult) {
+        return directUrlResult;
       }
 
-      return result || {};
+      try {
+        await ensureContentScriptReadyOnTab('signup-page', tabId, {
+          inject: SIGNUP_PAGE_INJECT_FILES,
+          injectSource: 'signup-page',
+          timeoutMs: readyTimeoutMs,
+          retryDelayMs: 900,
+          logMessage: `步骤 ${step}：资料页正在提交或跳转，正在等待页面恢复后继续确认...`,
+        });
+
+        const result = await sendToContentScriptResilient('signup-page', {
+          type: 'PREPARE_SIGNUP_PROFILE_COMPLETION',
+          step,
+          source: 'background',
+          payload,
+        }, {
+          timeoutMs: finalizeTimeoutMs,
+          retryDelayMs: 700,
+          logMessage: `步骤 ${step}：资料页已提交，正在确认页面是否真正进入下一阶段...`,
+        });
+
+        if (result?.error) {
+          throw new Error(result.error);
+        }
+
+        return result || {};
+      } catch (error) {
+        const urlFallbackResult = await getSignupProfileCompletionFromCurrentTab(tabId);
+        if (urlFallbackResult) {
+          return urlFallbackResult;
+        }
+        throw error;
+      }
     }
 
     async function resolveSignupEmailForFlow(state) {

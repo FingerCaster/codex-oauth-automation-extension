@@ -18,6 +18,60 @@
     let listExpanded = false;
     let batchVerifyRunning = false;
     let batchVerifyStopping = false;
+    let appliedSearchTerm = '';
+
+    function normalizeHotmailSearchText(value) {
+      return String(value || '').trim().toLowerCase();
+    }
+
+    function getSortedHotmailAccounts(accounts = []) {
+      return (Array.isArray(accounts) ? accounts : [])
+        .slice()
+        .sort((left, right) => {
+          const leftEmail = String(left?.email || '').trim();
+          const rightEmail = String(right?.email || '').trim();
+          const emailOrder = leftEmail.localeCompare(rightEmail, 'en', {
+            sensitivity: 'base',
+            numeric: true,
+          });
+          if (emailOrder !== 0) {
+            return emailOrder;
+          }
+
+          const leftClientId = String(left?.clientId || '').trim();
+          const rightClientId = String(right?.clientId || '').trim();
+          const clientIdOrder = leftClientId.localeCompare(rightClientId, 'en', {
+            sensitivity: 'base',
+            numeric: true,
+          });
+          if (clientIdOrder !== 0) {
+            return clientIdOrder;
+          }
+
+          return String(left?.id || '').localeCompare(String(right?.id || ''), 'en', {
+            sensitivity: 'base',
+            numeric: true,
+          });
+        });
+    }
+
+    function getRenderedHotmailAccounts(currentState = state.getLatestState()) {
+      const accounts = getSortedHotmailAccounts(helpers.getHotmailAccounts(currentState));
+      const normalizedSearchTerm = normalizeHotmailSearchText(appliedSearchTerm);
+      if (!normalizedSearchTerm) {
+        return accounts;
+      }
+
+      return accounts.filter((account) => {
+        const haystack = [
+          account?.email,
+          account?.clientId,
+          getHotmailStatusLabel(account),
+          getHotmailAvailabilityLabel(account),
+        ].join(' ').toLowerCase();
+        return haystack.includes(normalizedSearchTerm);
+      });
+    }
 
     function getHotmailAccountsByUsage(mode = 'all', currentState = state.getLatestState()) {
       const accounts = helpers.getHotmailAccounts(currentState);
@@ -245,11 +299,18 @@
     function renderHotmailAccounts() {
       if (!dom.hotmailAccountsList) return;
       const latestState = state.getLatestState();
-      const accounts = helpers.getHotmailAccounts(latestState);
+      const allAccounts = helpers.getHotmailAccounts(latestState);
+      const accounts = getRenderedHotmailAccounts(latestState);
       const currentId = latestState?.currentHotmailAccountId || '';
 
-      if (!accounts.length) {
+      if (!allAccounts.length) {
         dom.hotmailAccountsList.innerHTML = '<div class="hotmail-empty">还没有 Hotmail 账号，先添加一条再校验。</div>';
+        updateHotmailListViewport(latestState);
+        return;
+      }
+
+      if (!accounts.length) {
+        dom.hotmailAccountsList.innerHTML = '<div class="hotmail-empty">没有匹配当前搜索条件的 Hotmail 账号。</div>';
         updateHotmailListViewport(latestState);
         return;
       }
@@ -288,6 +349,11 @@
         </div>
       `).join('');
       updateHotmailListViewport(latestState);
+    }
+
+    function applyHotmailSearch(value = dom.inputHotmailSearch?.value || '') {
+      appliedSearchTerm = String(value || '').trim();
+      renderHotmailAccounts();
     }
 
     async function deleteHotmailAccountsByMode(mode) {
@@ -676,6 +742,21 @@
       dom.btnBatchVerifyHotmailAccounts?.addEventListener('click', handleBatchVerifyHotmailAccounts);
       dom.btnAddHotmailAccount?.addEventListener('click', handleAddHotmailAccount);
       dom.btnImportHotmailAccounts?.addEventListener('click', handleImportHotmailAccounts);
+      dom.btnSearchHotmailAccounts?.addEventListener('click', () => {
+        applyHotmailSearch(dom.inputHotmailSearch?.value || '');
+      });
+      dom.inputHotmailSearch?.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter') {
+          return;
+        }
+        event.preventDefault?.();
+        applyHotmailSearch(event.target?.value || dom.inputHotmailSearch?.value || '');
+      });
+      dom.inputHotmailSearch?.addEventListener('input', () => {
+        if (!normalizeHotmailSearchText(dom.inputHotmailSearch?.value || '') && appliedSearchTerm) {
+          applyHotmailSearch('');
+        }
+      });
       dom.hotmailAccountsList?.addEventListener('click', handleAccountListClick);
       formController.sync();
     }

@@ -64,6 +64,8 @@ test('sidepanel html contains collapsible hotmail form controls', () => {
   assert.match(html, /id="btn-batch-verify-hotmail-accounts"[^>]*>批量校验</);
   assert.match(html, /id="hotmail-form-shell"/);
   assert.match(html, /id="btn-import-hotmail-accounts"[^>]*>批量导入</);
+  assert.match(html, /id="input-hotmail-search"/);
+  assert.match(html, /id="btn-search-hotmail-accounts"[^>]*>搜索</);
 });
 
 test('hotmail manager exposes a factory and renders empty state', () => {
@@ -132,6 +134,123 @@ test('hotmail manager exposes a factory and renders empty state', () => {
 
   manager.renderHotmailAccounts();
   assert.match(hotmailAccountsList.innerHTML, /还没有 Hotmail 账号/);
+});
+
+test('hotmail manager sorts accounts by email and filters them through the search button', () => {
+  const source = fs.readFileSync('sidepanel/hotmail-manager.js', 'utf8');
+  const windowObject = {
+    SidepanelAccountPoolUi: createAccountPoolUiStub(),
+  };
+  const localStorageMock = {
+    getItem() {
+      return null;
+    },
+    setItem() {},
+  };
+
+  const api = new Function('window', 'localStorage', `${source}; return window.SidepanelHotmailManager;`)(
+    windowObject,
+    localStorageMock
+  );
+
+  const handlers = {};
+  const stateStore = {
+    currentHotmailAccountId: null,
+    hotmailAccounts: [
+      { id: 'zeta', email: 'Zeta@hotmail.com', status: 'authorized', used: false, refreshToken: 'rt-z', clientId: 'client-z' },
+      { id: 'beta', email: 'beta@hotmail.com', status: 'authorized', used: false, refreshToken: 'rt-b', clientId: 'client-b' },
+      { id: 'alpha', email: 'Alpha@hotmail.com', status: 'authorized', used: false, refreshToken: 'rt-a', clientId: 'client-a' },
+    ],
+  };
+  const hotmailAccountsList = {
+    innerHTML: '',
+    addEventListener() {},
+  };
+  const searchInput = {
+    value: '',
+    addEventListener(type, handler) {
+      if (type === 'input') handlers.searchInput = handler;
+      if (type === 'keydown') handlers.searchKeydown = handler;
+    },
+  };
+  const searchButton = {
+    disabled: false,
+    addEventListener(type, handler) {
+      if (type === 'click') handlers.searchClick = handler;
+    },
+  };
+
+  const manager = api.createHotmailManager({
+    state: {
+      getLatestState: () => stateStore,
+      syncLatestState(updates) {
+        Object.assign(stateStore, updates);
+      },
+    },
+    dom: {
+      btnAddHotmailAccount: { textContent: '', disabled: false, addEventListener() {} },
+      btnBatchVerifyHotmailAccounts: { textContent: '', disabled: false, hidden: true, addEventListener() {} },
+      btnClearUsedHotmailAccounts: { textContent: '', disabled: false, addEventListener() {} },
+      btnDeleteAllHotmailAccounts: { textContent: '', disabled: false, addEventListener() {} },
+      btnHotmailUsageGuide: { addEventListener() {} },
+      btnImportHotmailAccounts: { disabled: false, addEventListener() {} },
+      btnSearchHotmailAccounts: searchButton,
+      btnToggleHotmailForm: { textContent: '', disabled: false, setAttribute() {}, addEventListener() {} },
+      btnToggleHotmailList: { textContent: '', disabled: false, setAttribute() {}, addEventListener() {} },
+      hotmailAccountsList,
+      hotmailFormShell: { hidden: true },
+      hotmailListShell: { classList: { toggle() {} } },
+      inputEmail: { value: '' },
+      inputHotmailClientId: { value: '' },
+      inputHotmailEmail: { value: '', focus() {} },
+      inputHotmailImport: { value: '' },
+      inputHotmailPassword: { value: '' },
+      inputHotmailRefreshToken: { value: '' },
+      inputHotmailSearch: searchInput,
+      selectMailProvider: { value: 'hotmail-api' },
+    },
+    helpers: {
+      getHotmailAccounts: () => stateStore.hotmailAccounts,
+      getCurrentHotmailEmail: () => '',
+      escapeHtml: (value) => String(value || ''),
+      showToast() {},
+      openConfirmModal: async () => true,
+      copyTextToClipboard: async () => {},
+    },
+    runtime: {
+      sendMessage: async () => ({}),
+    },
+    constants: {
+      copyIcon: '',
+      displayTimeZone: 'Asia/Shanghai',
+      expandedStorageKey: 'multipage-hotmail-list-expanded',
+    },
+    hotmailUtils: {},
+  });
+
+  manager.bindHotmailEvents();
+  manager.renderHotmailAccounts();
+
+  const alphaIndex = hotmailAccountsList.innerHTML.indexOf('Alpha@hotmail.com');
+  const betaIndex = hotmailAccountsList.innerHTML.indexOf('beta@hotmail.com');
+  const zetaIndex = hotmailAccountsList.innerHTML.indexOf('Zeta@hotmail.com');
+  assert.ok(alphaIndex >= 0);
+  assert.ok(betaIndex > alphaIndex);
+  assert.ok(zetaIndex > betaIndex);
+
+  searchInput.value = 'zeta';
+  handlers.searchClick();
+
+  assert.match(hotmailAccountsList.innerHTML, /Zeta@hotmail\.com/);
+  assert.doesNotMatch(hotmailAccountsList.innerHTML, /Alpha@hotmail\.com/);
+  assert.doesNotMatch(hotmailAccountsList.innerHTML, /beta@hotmail\.com/);
+
+  searchInput.value = '';
+  handlers.searchInput();
+
+  assert.match(hotmailAccountsList.innerHTML, /Alpha@hotmail\.com/);
+  assert.match(hotmailAccountsList.innerHTML, /beta@hotmail\.com/);
+  assert.match(hotmailAccountsList.innerHTML, /Zeta@hotmail\.com/);
 });
 
 test('hotmail manager toggles form container from header button', () => {

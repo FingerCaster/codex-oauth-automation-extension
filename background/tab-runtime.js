@@ -33,7 +33,48 @@
       }
     }
 
-    function waitForTabUpdateComplete(tabId, timeoutMs = 30000) {
+    function normalizeTimeoutMs(value, fallbackMs = 1) {
+      const numeric = Number(value);
+      if (Number.isFinite(numeric) && numeric > 0) {
+        return Math.max(1, Math.floor(numeric));
+      }
+      const fallback = Number(fallbackMs);
+      return Number.isFinite(fallback) && fallback > 0
+        ? Math.max(1, Math.floor(fallback))
+        : 1;
+    }
+
+    async function hasConfiguredBrowserProxy() {
+      if (typeof getState !== 'function') {
+        return false;
+      }
+
+      try {
+        const state = await getState();
+        return Boolean(String(state?.browserProxyUrl || '').trim());
+      } catch {
+        return false;
+      }
+    }
+
+    function scaleTimeoutForProxy(timeoutMs, options = {}) {
+      const baseTimeoutMs = normalizeTimeoutMs(timeoutMs, 1);
+      const multiplier = Math.max(1, Number(options.multiplier) || 2);
+      const maximumMs = normalizeTimeoutMs(options.maximumMs, Math.max(baseTimeoutMs, 180000));
+      return Math.min(maximumMs, Math.max(baseTimeoutMs, Math.round(baseTimeoutMs * multiplier)));
+    }
+
+    async function getProxyAwareTimeoutMs(timeoutMs, options = {}) {
+      const baseTimeoutMs = normalizeTimeoutMs(timeoutMs, 1);
+      const proxyEnabled = await hasConfiguredBrowserProxy();
+      if (!proxyEnabled) {
+        return baseTimeoutMs;
+      }
+      return scaleTimeoutForProxy(baseTimeoutMs, options);
+    }
+
+    async function waitForTabUpdateComplete(tabId, timeoutMs = 30000) {
+      const effectiveTimeoutMs = await getProxyAwareTimeoutMs(timeoutMs);
       return new Promise((resolve, reject) => {
         let settled = false;
         let stopTimer = null;
@@ -62,7 +103,7 @@
           }
         };
 
-        const timer = setTimeout(resolveSafely, timeoutMs);
+        const timer = setTimeout(resolveSafely, effectiveTimeoutMs);
         chrome.tabs.onUpdated.addListener(listener);
 
         const pollStop = () => {
@@ -284,9 +325,10 @@
 
     async function waitForTabUrlFamily(source, tabId, referenceUrl, options = {}) {
       const { timeoutMs = 15000, retryDelayMs = 400 } = options;
+      const effectiveTimeoutMs = await getProxyAwareTimeoutMs(timeoutMs);
       const start = Date.now();
 
-      while (Date.now() - start < timeoutMs) {
+      while (Date.now() - start < effectiveTimeoutMs) {
         try {
           const tab = await chrome.tabs.get(tabId);
           if (matchesSourceUrlFamily(source, tab.url, referenceUrl)) {
@@ -302,9 +344,10 @@
 
     async function waitForTabUrlMatch(tabId, matcher, options = {}) {
       const { timeoutMs = 15000, retryDelayMs = 400 } = options;
+      const effectiveTimeoutMs = await getProxyAwareTimeoutMs(timeoutMs);
       const start = Date.now();
 
-      while (Date.now() - start < timeoutMs) {
+      while (Date.now() - start < effectiveTimeoutMs) {
         try {
           const tab = await chrome.tabs.get(tabId);
           if (matcher(tab.url || '', tab)) {
@@ -320,9 +363,10 @@
 
     async function waitForTabComplete(tabId, options = {}) {
       const { timeoutMs = 15000, retryDelayMs = 300 } = options;
+      const effectiveTimeoutMs = await getProxyAwareTimeoutMs(timeoutMs);
       const start = Date.now();
 
-      while (Date.now() - start < timeoutMs) {
+      while (Date.now() - start < effectiveTimeoutMs) {
         try {
           const tab = await chrome.tabs.get(tabId);
           if (tab?.status === 'complete') {
@@ -393,6 +437,7 @@
         logMessage = '',
       } = options;
 
+      const effectiveTimeoutMs = await getProxyAwareTimeoutMs(timeoutMs);
       const start = Date.now();
       let lastError = null;
       let logged = false;
@@ -400,10 +445,10 @@
 
       console.log(
         LOG_PREFIX,
-        `[ensureContentScriptReadyOnTab] start ${source} tab=${tabId}, timeout=${timeoutMs}ms, inject=${Array.isArray(inject) ? inject.join(',') : 'none'}`
+        `[ensureContentScriptReadyOnTab] start ${source} tab=${tabId}, timeout=${effectiveTimeoutMs}ms, inject=${Array.isArray(inject) ? inject.join(',') : 'none'}`
       );
 
-      while (Date.now() - start < timeoutMs) {
+      while (Date.now() - start < effectiveTimeoutMs) {
         attempt += 1;
         const pong = await pingContentScriptOnTab(tabId);
         if (pong?.ok && (!pong.source || pong.source === source)) {
@@ -487,6 +532,13 @@
       return 30000;
     }
 
+    async function getEffectiveContentScriptResponseTimeoutMs(message, explicitTimeoutMs = undefined) {
+      const baseTimeoutMs = explicitTimeoutMs === undefined
+        ? getContentScriptResponseTimeoutMs(message)
+        : normalizeTimeoutMs(explicitTimeoutMs, 1);
+      return getProxyAwareTimeoutMs(baseTimeoutMs);
+    }
+
     function getMessageDebugLabel(source, message, tabId = null) {
       const parts = [source || 'unknown', message?.type || 'UNKNOWN'];
       if (Number.isInteger(message?.step)) parts.push(`step=${message.step}`);
@@ -544,13 +596,13 @@
       });
     }
 
-    function queueCommand(source, message, timeout = 15000) {
+    function queueCommand(source, message, timeout = 15000, responseTimeoutMs = undefined) {
       return new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
           pendingCommands.delete(source);
           reject(new Error(`Content script on ${source} did not respond in ${timeout / 1000}s. Try refreshing the tab and retry.`));
         }, timeout);
-        pendingCommands.set(source, { message, resolve, reject, timer });
+        pendingCommands.set(source, { message, responseTimeoutMs, resolve, reject, timer });
         console.log(LOG_PREFIX, `Command queued for ${source} (waiting for ready)`);
       });
     }
@@ -560,7 +612,7 @@
       if (pending) {
         clearTimeout(pending.timer);
         pendingCommands.delete(source);
-        sendTabMessageWithTimeout(tabId, source, pending.message).then(pending.resolve).catch(pending.reject);
+        sendTabMessageWithTimeout(tabId, source, pending.message, pending.responseTimeoutMs).then(pending.resolve).catch(pending.reject);
         console.log(LOG_PREFIX, `Flushed queued command to ${source} (tab ${tabId})`);
       }
     }
@@ -669,19 +721,26 @@
 
     async function sendToContentScript(source, message, options = {}) {
       throwIfStopped();
-      const { responseTimeoutMs = getContentScriptResponseTimeoutMs(message) } = options;
+      const requestedQueueTimeoutMs = options.queueTimeoutMs;
+      const requestedResponseTimeoutMs = options.responseTimeoutMs;
+      const responseTimeoutMs = await getEffectiveContentScriptResponseTimeoutMs(message, requestedResponseTimeoutMs);
+      const queueTimeoutMs = options.queueTimeoutMsIsFinal
+        ? normalizeTimeoutMs(requestedQueueTimeoutMs, 15000)
+        : await getProxyAwareTimeoutMs(
+          requestedQueueTimeoutMs === undefined ? 15000 : requestedQueueTimeoutMs
+        );
       const registry = await getTabRegistry();
       const entry = registry[source];
 
       if (!entry || !entry.ready) {
         throwIfStopped();
-        return queueCommand(source, message);
+        return queueCommand(source, message, queueTimeoutMs, responseTimeoutMs);
       }
 
       const alive = await isTabAlive(source);
       throwIfStopped();
       if (!alive) {
-        return queueCommand(source, message);
+        return queueCommand(source, message, queueTimeoutMs, responseTimeoutMs);
       }
 
       throwIfStopped();
@@ -695,21 +754,30 @@
         logMessage = '',
         responseTimeoutMs,
       } = options;
+      const effectiveResponseTimeoutMs = await getEffectiveContentScriptResponseTimeoutMs(message, responseTimeoutMs);
+      const effectiveRetryDelayMs = normalizeTimeoutMs(retryDelayMs, 1);
+      const effectiveTimeoutMs = Math.max(
+        await getProxyAwareTimeoutMs(timeoutMs),
+        effectiveResponseTimeoutMs + effectiveRetryDelayMs + 2000
+      );
       const start = Date.now();
       let lastError = null;
       let logged = false;
       let attempt = 0;
 
-      while (Date.now() - start < timeoutMs) {
+      while (Date.now() - start < effectiveTimeoutMs) {
         throwIfStopped();
         attempt += 1;
 
         try {
-          return await sendToContentScript(
-            source,
-            message,
-            responseTimeoutMs !== undefined ? { responseTimeoutMs } : {}
-          );
+          const transportOptions = {
+            queueTimeoutMs: effectiveTimeoutMs,
+            queueTimeoutMsIsFinal: true,
+          };
+          if (responseTimeoutMs !== undefined) {
+            transportOptions.responseTimeoutMs = responseTimeoutMs;
+          }
+          return await sendToContentScript(source, message, transportOptions);
         } catch (err) {
           const retryable = isRetryableContentScriptTransportError(err);
           if (!retryable) {
@@ -722,7 +790,7 @@
             logged = true;
           }
 
-          await sleepOrStop(retryDelayMs);
+          await sleepOrStop(effectiveRetryDelayMs);
         }
       }
 
@@ -735,20 +803,28 @@
         maxRecoveryAttempts = 2,
         responseTimeoutMs,
       } = options;
+      const effectiveResponseTimeoutMs = await getEffectiveContentScriptResponseTimeoutMs(message, responseTimeoutMs);
+      const effectiveTimeoutMs = Math.max(
+        await getProxyAwareTimeoutMs(timeoutMs),
+        effectiveResponseTimeoutMs + 5000
+      );
       const start = Date.now();
       let lastError = null;
       let recoveries = 0;
       let logged = false;
 
-      while (Date.now() - start < timeoutMs) {
+      while (Date.now() - start < effectiveTimeoutMs) {
         throwIfStopped();
 
         try {
-          return await sendToContentScript(
-            mail.source,
-            message,
-            responseTimeoutMs !== undefined ? { responseTimeoutMs } : {}
-          );
+          const transportOptions = {
+            queueTimeoutMs: effectiveTimeoutMs,
+            queueTimeoutMsIsFinal: true,
+          };
+          if (responseTimeoutMs !== undefined) {
+            transportOptions.responseTimeoutMs = responseTimeoutMs;
+          }
+          return await sendToContentScript(mail.source, message, transportOptions);
         } catch (err) {
           if (!isRetryableContentScriptTransportError(err)) {
             throw err;
@@ -786,6 +862,7 @@
       buildErrorPageInjectionMessage,
       ensureContentScriptReadyOnTab,
       flushCommand,
+      getEffectiveContentScriptResponseTimeoutMs,
       getContentScriptResponseTimeoutMs,
       getMessageDebugLabel,
       getTabId,

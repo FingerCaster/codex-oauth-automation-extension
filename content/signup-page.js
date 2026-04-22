@@ -283,6 +283,8 @@ async function handle405ResendError(step, remainingTimeout = 30000) {
 
 const SIGNUP_ENTRY_TRIGGER_PATTERN = /免费注册|立即注册|注册|sign\s*up|register|create\s*account|create\s+account/i;
 const SIGNUP_EMAIL_INPUT_SELECTOR = 'input[type="email"], input[name="email"], input[name="username"], input[id*="email"], input[placeholder*="email" i]';
+const SIGNUP_GUIDE_PAGE_PATTERN = /welcome\s+to\s+chatgpt|try\s+our\s+latest\s+models|how\s+would\s+you\s+like\s+to\s+use\s+chatgpt|choose\s+how\s+you(?:'d|\s+would)?\s+like\s+to\s+use\s+chatgpt|欢迎使用\s*chatgpt|欢迎来到\s*chatgpt|开始使用\s*chatgpt|让我们开始/i;
+const SIGNUP_GUIDE_ACTION_PATTERN = /get\s+started|continue|next|开始|继续|下一步|跳过/i;
 
 function getSignupEmailInput() {
   const input = document.querySelector(SIGNUP_EMAIL_INPUT_SELECTOR);
@@ -740,15 +742,53 @@ function createSignupUserAlreadyExistsError() {
 }
 
 function isStep5Ready() {
-  return Boolean(
-    document.querySelector('input[name="name"], input[autocomplete="name"], input[name="birthday"], input[name="age"], [role="spinbutton"][data-type="year"]')
-  );
+  const candidateSelectors = [
+    'input[name="name"]',
+    'input[autocomplete="name"]',
+    'input[name="birthday"]',
+    'input[name="age"]',
+    '[role="spinbutton"][data-type="year"]',
+    '[role="spinbutton"][data-type="month"]',
+    '[role="spinbutton"][data-type="day"]',
+    '.react-aria-Select button[aria-haspopup="listbox"]',
+  ];
+
+  return candidateSelectors.some((selector) => (
+    Array.from(document.querySelectorAll(selector)).some((el) => isVisibleElement(el))
+  ));
 }
 
 function getPageTextSnapshot() {
   return (document.body?.innerText || document.body?.textContent || '')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function isSignupEntryHost(hostname = '') {
+  return ['chatgpt.com', 'chat.openai.com'].includes(String(hostname || '').trim().toLowerCase());
+}
+
+function isSignupProfileCompletionUrl(rawUrl = location.href) {
+  try {
+    const parsed = new URL(String(rawUrl || location.href || ''));
+    return isSignupEntryHost(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function isSignupGuidePageReady() {
+  const pageText = getPageTextSnapshot();
+  if (!pageText || !SIGNUP_GUIDE_PAGE_PATTERN.test(pageText)) {
+    return false;
+  }
+
+  const actionCandidates = document.querySelectorAll(
+    'button, a, [role="button"], [role="link"], input[type="button"], input[type="submit"]'
+  );
+  return Array.from(actionCandidates).some((el) => (
+    isVisibleElement(el) && SIGNUP_GUIDE_ACTION_PATTERN.test(getActionText(el))
+  ));
 }
 
 function getLoginVerificationDisplayedEmail() {
@@ -1714,12 +1754,33 @@ async function prepareSignupVerificationFlow(payload = {}, timeout = 30000) {
 }
 
 function inspectStep5CompletionState() {
+  if (isSignupProfileCompletionUrl()) {
+    return {
+      state: 'completed',
+      url: location.href,
+      completedByUrl: true,
+      guidePage: isSignupGuidePageReady(),
+      consentReady: isStep8Ready(),
+      addPhonePage: isAddPhonePageReady(),
+    };
+  }
+
   const errorText = getStep5ErrorText();
   if (errorText) {
     return {
       state: 'error',
-      errorText,
+        errorText,
       url: location.href,
+    };
+  }
+
+  if (isSignupGuidePageReady()) {
+    return {
+      state: 'completed',
+      url: location.href,
+      guidePage: true,
+      consentReady: isStep8Ready(),
+      addPhonePage: isAddPhonePageReady(),
     };
   }
 

@@ -150,6 +150,45 @@
       return { stopping: true };
     }
 
+    async function markCurrentHotmailAccountUsed(options = {}) {
+      if (typeof patchHotmailAccount !== 'function' || typeof isHotmailProvider !== 'function') {
+        return null;
+      }
+
+      const {
+        preserveCurrentSelection = false,
+        logMessage = '',
+      } = options;
+      const latestState = await getState();
+      const currentAccountId = String(latestState?.currentHotmailAccountId || '').trim();
+      if (!currentAccountId || !isHotmailProvider(latestState)) {
+        return null;
+      }
+
+      const accounts = typeof normalizeHotmailAccounts === 'function'
+        ? normalizeHotmailAccounts(latestState?.hotmailAccounts)
+        : (Array.isArray(latestState?.hotmailAccounts) ? latestState.hotmailAccounts : []);
+      const currentAccount = typeof findHotmailAccount === 'function'
+        ? await Promise.resolve(findHotmailAccount(accounts, currentAccountId))
+        : ((Array.isArray(accounts) ? accounts : []).find((account) => account?.id === currentAccountId) || null);
+      const nextAccount = await patchHotmailAccount(
+        currentAccountId,
+        {
+          used: true,
+          lastUsedAt: Date.now(),
+        },
+        {
+          preserveCurrentSelection,
+        }
+      );
+
+      if (!currentAccount?.used && logMessage) {
+        await addLog(logMessage, 'ok');
+      }
+
+      return nextAccount;
+    }
+
     async function handleStepData(step, payload) {
       switch (step) {
         case 1: {
@@ -200,6 +239,10 @@
             lastEmailTimestamp: payload.emailTimestamp || null,
             signupVerificationRequestedAt: null,
           });
+          await markCurrentHotmailAccountUsed({
+            preserveCurrentSelection: true,
+            logMessage: '当前 Hotmail 账号已在步骤 4 成功后标记为已用。',
+          });
           break;
         case 8:
           await setState({
@@ -221,13 +264,10 @@
             await closeLocalhostCallbackTabs(payload.localhostUrl);
           }
           const latestState = await getState();
-          if (latestState.currentHotmailAccountId && isHotmailProvider(latestState)) {
-            await patchHotmailAccount(latestState.currentHotmailAccountId, {
-              used: true,
-              lastUsedAt: Date.now(),
-            });
-            await addLog('当前 Hotmail 账号已自动标记为已用。', 'ok');
-          }
+          await markCurrentHotmailAccountUsed({
+            preserveCurrentSelection: false,
+            logMessage: '当前 Hotmail 账号已自动标记为已用。',
+          });
           if (String(latestState.mailProvider || '').trim().toLowerCase() === '2925' && latestState.currentMail2925AccountId) {
             await patchMail2925Account(latestState.currentMail2925AccountId, {
               lastUsedAt: Date.now(),

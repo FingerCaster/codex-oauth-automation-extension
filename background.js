@@ -1662,7 +1662,8 @@ async function deleteHotmailAccounts(mode = 'all') {
   };
 }
 
-async function patchHotmailAccount(accountId, updates = {}) {
+async function patchHotmailAccount(accountId, updates = {}, options = {}) {
+  const { preserveCurrentSelection = false } = options;
   const state = await getState();
   const accounts = normalizeHotmailAccounts(state.hotmailAccounts);
   const account = findHotmailAccount(accounts, accountId);
@@ -1678,7 +1679,9 @@ async function patchHotmailAccount(accountId, updates = {}) {
 
   await syncHotmailAccounts(accounts.map((item) => (item.id === account.id ? nextAccount : item)));
 
-  if (state.currentHotmailAccountId === account.id && shouldClearHotmailCurrentSelection(nextAccount)) {
+  if (!preserveCurrentSelection
+    && state.currentHotmailAccountId === account.id
+    && shouldClearHotmailCurrentSelection(nextAccount)) {
     await setState({ currentHotmailAccountId: null });
     broadcastDataUpdate({ currentHotmailAccountId: null });
     if (isHotmailProvider(state)) {
@@ -1712,29 +1715,42 @@ async function setCurrentHotmailAccount(accountId, options = {}) {
 }
 
 async function ensureHotmailAccountForFlow(options = {}) {
-  const { allowAllocate = true, markUsed = false, preferredAccountId = null } = options;
+  const {
+    allowAllocate = true,
+    allowUsedSelectedAccount = false,
+    markUsed = false,
+    preferredAccountId = null,
+  } = options;
   const state = await getState();
   const accounts = normalizeHotmailAccounts(state.hotmailAccounts);
-  const isAccountAllocatable = (candidate) => Boolean(candidate)
+  const isAccountReady = (candidate) => Boolean(candidate)
     && ['authorized', 'pending'].includes(String(candidate.status || '').trim().toLowerCase())
-    && !candidate.used
     && Boolean(candidate.refreshToken);
+  const isAccountAllocatable = (candidate) => isAccountReady(candidate) && !candidate.used;
+  const isSelectedAccountReusable = (candidate) => isAccountReady(candidate)
+    && (allowUsedSelectedAccount || !candidate.used);
 
   let account = null;
   if (preferredAccountId) {
-    account = findHotmailAccount(accounts, preferredAccountId);
+    const preferredAccount = findHotmailAccount(accounts, preferredAccountId);
+    if (isSelectedAccountReusable(preferredAccount)) {
+      account = preferredAccount;
+    }
   }
   if (!account && state.currentHotmailAccountId) {
-    account = findHotmailAccount(accounts, state.currentHotmailAccountId);
+    const currentAccount = findHotmailAccount(accounts, state.currentHotmailAccountId);
+    if (isSelectedAccountReusable(currentAccount)) {
+      account = currentAccount;
+    }
   }
-  if ((!account || !isAccountAllocatable(account)) && allowAllocate) {
+  if (!account && allowAllocate) {
     account = pickHotmailAccountForRun(accounts, {});
   }
 
   if (!account) {
     throw new Error('没有可用的 Hotmail 账号。请先在侧边栏添加至少一个带刷新令牌（refresh token）的账号。');
   }
-  if (!isAccountAllocatable(account)) {
+  if (!isAccountReady(account) || (!allowUsedSelectedAccount && account.used)) {
     throw new Error(`Hotmail 账号 ${account.email || account.id} 尚未就绪，无法读取邮件。`);
   }
 
@@ -2119,6 +2135,7 @@ async function pollHotmailVerificationCode(step, state, pollPayload = {}) {
   await addLog(`步骤 ${step}：正在确定 Hotmail 收信账号...`, 'info');
   let account = await ensureHotmailAccountForFlow({
     allowAllocate: true,
+    allowUsedSelectedAccount: true,
     markUsed: false,
     preferredAccountId: state.currentHotmailAccountId || null,
   });
